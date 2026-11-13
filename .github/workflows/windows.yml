@@ -1,0 +1,97 @@
+name: Build and release Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Run offline regression tests
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -B -m unittest discover -v
+      - name: Build EXE with runtime folder and ZIP
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python build_windows.py --clean
+      - name: Check packaged assets and Tk without clicking
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          import subprocess
+          result = Path('build/frozen-self-test.json').resolve()
+          process = subprocess.run(
+              [str(Path('dist/WuwaTappoChestHelper.exe').resolve()), '--self-test', str(result)],
+              timeout=90,
+          )
+          assert process.returncode == 0, f'Self-test exited with {process.returncode}'
+          report = json.loads(result.read_text(encoding='utf-8'))
+          assert report.get('ok') is True, report
+          assert report.get('frozen') is True, report
+          print(report)
+          # The folder package must start even when TEMP cannot be used.
+          import os
+          blocked = Path('build/not-a-temp-directory').resolve()
+          blocked.write_text('This is a file, not a directory.', encoding='utf-8')
+          environment = os.environ.copy()
+          environment['TEMP'] = environment['TMP'] = str(blocked)
+          blocked_report = Path('build/frozen-blocked-temp.json').resolve()
+          process = subprocess.run(
+              [str(Path('dist/WuwaTappoChestHelper.exe').resolve()), '--self-test', str(blocked_report)],
+              timeout=90, env=environment,
+          )
+          assert process.returncode == 0, f'Blocked-TEMP self-test exited with {process.returncode}'
+          report = json.loads(blocked_report.read_text(encoding='utf-8'))
+          assert report.get('ok') is True and report.get('frozen') is True, report
+          print(report)
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WuwaTappoChestHelper-windows-x64
+          path: |
+            dist/WuwaTappoChestHelper.exe
+            dist/_internal/
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          $version = python -c "from build_windows import app_version; print(app_version())"
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view $env:RELEASE_TAG --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $env:RELEASE_TAG already exists; preserving its tagged source and assets. Bump APP_VERSION to publish a new release."
+            exit 0
+          }
+          gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --title "WuwaTappo 宝箱自动领取 $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw "Could not create release; check access and release status" }
+          $assets = @(Get-Item 'dist/*.zip', 'dist/SHA256SUMS.txt' | ForEach-Object FullName)
+          gh release upload $env:RELEASE_TAG @assets
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload release assets" }
