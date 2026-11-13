@@ -64,6 +64,20 @@ jobs:
           report = json.loads(blocked_report.read_text(encoding='utf-8'))
           assert report.get('ok') is True and report.get('frozen') is True, report
           print(report)
+          # Verify the frozen spawn path, Maa DLLs and input-disabled worker.
+          for name, child_environment in (
+              ('background-self-test.json', os.environ.copy()),
+              ('background-blocked-temp.json', environment),
+          ):
+              destination = Path('build', name).resolve()
+              process = subprocess.run(
+                  [str(Path('dist/WuwaTappoChestHelper.exe').resolve()), '--background-self-test', str(destination)],
+                  timeout=90, env=child_environment,
+              )
+              assert process.returncode == 0, f'Background self-test exited with {process.returncode}'
+              report = json.loads(destination.read_text(encoding='utf-8'))
+              assert report.get('ok') is True and report.get('frozen') is True, report
+              print(report)
       - name: Save build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -73,6 +87,9 @@ jobs:
             dist/_internal/
             dist/*.zip
             dist/SHA256SUMS.txt
+            dist/LICENSE
+            dist/THIRD_PARTY_NOTICES.md
+            dist/licenses/
           if-no-files-found: error
       - name: Resolve release tag
         shell: pwsh
@@ -92,6 +109,7 @@ jobs:
           }
           gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --title "WuwaTappo 宝箱自动领取 $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { throw "Could not create release; check access and release status" }
-          $assets = @(Get-Item 'dist/*.zip', 'dist/SHA256SUMS.txt' | ForEach-Object FullName)
+          $archive = "dist/WuwaTappoChestHelper-$env:RELEASE_TAG-windows-x64.zip"
+          $assets = @(Get-Item $archive, 'dist/SHA256SUMS.txt' | ForEach-Object FullName)
           gh release upload $env:RELEASE_TAG @assets
           if ($LASTEXITCODE -ne 0) { throw "Could not upload release assets" }

@@ -1,2 +1,4 @@
 numpy>=1.24
 Pillow>=10.0
+MaaFw==5.16.0
+StrEnum==0.4.15

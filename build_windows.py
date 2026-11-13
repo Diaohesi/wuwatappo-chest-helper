@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+from importlib import metadata as package_metadata
 import json
 import os
 from pathlib import Path
@@ -62,22 +63,26 @@ def portable_instructions(version: str) -> str:
 1. 将 ZIP 完整解压到固定文件夹，双击 WuwaTappoChestHelper.exe 即可运行，无需安装 Python。
    必须保留 EXE 旁的整个 _internal 文件夹，不可只复制 EXE 或在 ZIP 中直接运行。
 2. 打开时保持暂停，点击“开始领取”或按 F8 开始。F8 暂停/继续，F12 退出。
-3. 保持 WuwaTappo 正在运行、桌面解锁、金色宝箱没有被其他窗口遮住。
+3. 选择“后台领取”可在使用其他应用或普通全屏遮挡时领取，不会移动真实鼠标、抢焦点或移动桌宠。
+   “可见点击”是兼容模式，需要金色宝箱在桌面可见，键鼠空闲 1.5 秒后短暂移动鼠标点击。
 4. 若提示桌宠权限较高，点击“以管理员身份重新启动”，并亲自确认 Windows UAC。
 5. 两个宝箱分别识别和领取；点击后等待图案连续两帧消失，再等待各自刷新。
 6. 可以最小化助手窗口。关闭助手则停止自动领取。
 
 宝箱图案和背景图已内置，不需要截图或配置图片。
-鼠标和键盘空闲 1.5 秒后才会点击；点击时会短暂移动鼠标。
+保持 WuwaTappo 正在运行、桌面解锁；不要最小化或隐藏桌宠本身。
+后台模式直接读取桌宠窗口并发送定向消息，不需要等待键鼠空闲。
 无宝箱时自动降低检查频率，默认最长每 10 秒检查一次，发现宝箱后恢复快检。
 桌宠未出现、锁屏或截图不可用时默认每 15 秒重查。
-本版仍需宝箱在桌面可见，尚未验证被全屏应用遮挡时的后台领取。
+普通不透明全屏遮挡已实测；独占全屏游戏尚未验证。
+锁屏时暂停，解锁后继续。睡眠和休眠期间不能领取。
 同一宝箱最多尝试 3 次，图案仍在则暂停并提示。
 “确认图案消失”表示观察到界面变化，实际奖励以桌宠内显示为准。
 设置和运行日志会保存在助手的数据目录中。
 
 1.5 版将运行依赖放在 _internal 中，启动不再创建临时解包目录。
 SHA256SUMS.txt 可用于检查 EXE 和运行依赖是否完整。项目源码和构建方法见 GitHub 仓库 README。
+后台截图使用 MaaFramework；第三方许可和来源见 THIRD_PARTY_NOTICES.md 与 licenses/。
 """
 
 
@@ -110,6 +115,10 @@ def build(clean: bool = False) -> list[Path]:
         "--icon", str(icon), "--version-file", str(metadata),
         "--distpath", str(work / "package"),
         "--workpath", str(work / "pyinstaller"), "--specpath", str(work),
+        # The capture SDK is imported only inside the spawned capture process.
+        # Keep its DLLs adjacent in maa/bin so ctypes can load their dependencies.
+        "--collect-all", "maa", "--copy-metadata", "MaaFw",
+        "--copy-metadata", "StrEnum", "--copy-metadata", "Pillow",
     ]
     if clean:
         command.append("--clean")
@@ -129,6 +138,14 @@ def build(clean: bool = False) -> list[Path]:
     data = json.loads(report.read_text(encoding="utf-8"))
     if not data.get("ok") or not data.get("frozen") or data.get("version") != version:
         raise RuntimeError(f"Packaged self-test failed: {data}")
+    background_report = work / "package-background-self-test.json"
+    if background_report.exists():
+        background_report.unlink()
+    subprocess.run([str(built), "--background-self-test", str(background_report)],
+                   cwd=work, timeout=90, check=True)
+    background_data = json.loads(background_report.read_text(encoding="utf-8"))
+    if not background_data.get("ok") or not background_data.get("frozen"):
+        raise RuntimeError(f"Packaged background self-test failed: {background_data}")
 
     # Stage the complete runtime before replacing anything. User settings and
     # logs sit in output, outside _internal, and are preserved during updates.
@@ -156,14 +173,29 @@ def build(clean: bool = False) -> list[Path]:
 
     instructions = output / "简明使用说明.txt"
     instructions.write_text(portable_instructions(version), encoding="utf-8-sig")
-    packaged = [destination, *sorted((output / "_internal").rglob("*"))]
+    license_file = output / "LICENSE"
+    shutil.copy2(ROOT / "LICENSE", license_file)
+    notices = output / "THIRD_PARTY_NOTICES.md"
+    shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", notices)
+    shutil.copytree(ROOT / "licenses", output / "licenses", dirs_exist_ok=True)
+    runtime_licenses = output / "licenses" / "runtime"
+    runtime_licenses.mkdir(exist_ok=True)
+    shutil.copy2(Path(sys.base_prefix) / "LICENSE.txt", runtime_licenses / "CPython-LICENSE.txt")
+    pyinstaller = package_metadata.distribution("PyInstaller")
+    installer_license = next(
+        pyinstaller.locate_file(path) for path in pyinstaller.files or ()
+        if str(path).replace("\\", "/").endswith("/licenses/COPYING.txt")
+    )
+    shutil.copy2(installer_license, runtime_licenses / "PyInstaller-COPYING.txt")
+    packaged = [destination, instructions, license_file, notices,
+                *sorted((output / "_internal").rglob("*")),
+                *sorted((output / "licenses").rglob("*"))]
     packaged = [path for path in packaged if path.is_file()]
     runtime_checksums = "".join(f"{sha256(path)}  {path.relative_to(output).as_posix()}\n" for path in packaged)
     archive = output / f"WuwaTappoChestHelper-v{version}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for path in packaged:
             bundle.write(path, path.relative_to(output).as_posix())
-        bundle.write(instructions, instructions.name)
         bundle.writestr("SHA256SUMS.txt", runtime_checksums)
     checksums = output / "SHA256SUMS.txt"
     checksums.write_text(runtime_checksums + f"{sha256(archive)}  {archive.name}\n", encoding="utf-8")

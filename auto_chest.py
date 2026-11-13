@@ -1,4 +1,4 @@
-"""WuwaTappo visible-screen image recognition. Run without arguments for the GUI."""
+"""WuwaTappo chest recognition with background and visible input modes."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +18,7 @@ from chest_assets import load_builtin_templates
 from chest_detection import detect_chests, detect_templates
 from chest_state import DetectionGate, ClickLedger, ClickLock
 import chest_windows as desktop
+import chest_background as bg
 from ui_assets import load_background
 
 SOURCE_BASE = Path(__file__).resolve().parent
@@ -32,8 +33,9 @@ if getattr(sys, "frozen", False):
         BASE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WuwaTappoChestHelper"
         BASE.mkdir(parents=True, exist_ok=True)
 CONFIG = BASE / "config.json"
-DEFAULTS = {"threshold": 0.94, "interval": 2.0}
-APP_VERSION = "1.6"
+DEFAULTS = {"threshold": 0.94, "interval": 2.0, "mode": "background"}
+MODE_NAMES = {"background": "后台领取（不占鼠标）", "visible": "可见点击（兼容模式）"}
+APP_VERSION = "1.7"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -46,6 +48,8 @@ class PendingClaim:
     last_attempt: float
     visible_since: float | None
     window_rect: tuple[int, int, int, int]
+    frame_digest: str | None = None
+    render_signature: tuple | None = None
 
     def retry_due(self, now):
         return (self.visible_since is not None and now-self.visible_since >= CLAIM_RETRY_WAIT
@@ -63,7 +67,8 @@ def read_config():
     try:
         data = json.loads(CONFIG.read_text(encoding="utf-8"))
         return {"threshold": max(.90, min(.99, float(data.get("threshold", .94)))),
-                "interval": max(1., min(30., float(data.get("interval", 2.))))}
+                "interval": max(1., min(30., float(data.get("interval", 2.)))),
+                "mode": data.get("mode") if data.get("mode") in MODE_NAMES else "background"}
     except (OSError, ValueError, TypeError):
         return DEFAULTS.copy()
 
@@ -86,6 +91,7 @@ class Watcher:
     def __init__(self, events):
         self.events = events
         self.stop_event = threading.Event()
+        self.wake_event = threading.Event()
         self.active = threading.Event()
         self.thread = None
         self.templates = []
@@ -99,14 +105,25 @@ class Watcher:
         self.next_track = 0
         self.empty_rounds = 0
         self.waiting_for_screen = False
+        self.mode = "visible"
+        self.background_capture = None
 
     def post(self, kind, text):
         self.events.put((kind, text))
         if kind in ("log", "error"):
             logging.log(logging.WARNING if kind == "error" else logging.INFO, text)
 
-    def start(self, templates, threshold, interval):
+    def start(self, templates, threshold, interval, mode="visible"):
         # The GUI only calls configure after the old thread has finished.
+        if mode not in MODE_NAMES:
+            raise ValueError("Unknown input mode")
+        if self.mode != mode:
+            # An explicit mode change starts new observations without treating
+            # disappearance from a different capture source as confirmation.
+            self.gate = DetectionGate()
+            self.ledger = ClickLedger()
+            self.pending.clear()
+        self.mode = mode
         self.templates = templates
         self.threshold, self.interval = threshold, interval
         self.gate.reset_observations()
@@ -114,16 +131,19 @@ class Watcher:
         self.empty_rounds = 0
         self.waiting_for_screen = False
         self.stop_event.clear()
+        self.wake_event.clear()
         self.active.set()
         self.thread = threading.Thread(target=self.run, daemon=True, name="chest-watcher")
         self.thread.start()
 
     def pause(self):
         self.active.clear()
+        self.wake_event.set()
 
     def close(self):
         self.active.clear()
         self.stop_event.set()
+        self.wake_event.set()
 
     def reset_pending_attempts(self):
         """An explicit manual start/continue grants one fresh bounded retry budget."""
@@ -165,12 +185,14 @@ class Watcher:
     def run(self):
         try:
             while not self.stop_event.is_set():
+                self.wake_event.clear()
                 if not self.active.is_set():
                     self.gate.reset_observations()
-                    self.stop_event.wait(.5)
+                    self.close_background_capture()
+                    self.wake_event.wait(.5)
                     continue
                 self.tick()
-                self.stop_event.wait(self.next_interval())
+                self.wake_event.wait(self.next_interval())
         except desktop.PrivilegeMismatch as exc:
             self.post("privilege", str(exc))
             self.active.clear()
@@ -178,6 +200,13 @@ class Watcher:
             logging.exception("Monitoring stopped")
             self.post("error", "识别已暂停，详情见 logs/auto_chest.log。")
             self.active.clear()
+        finally:
+            self.close_background_capture()
+
+    def close_background_capture(self):
+        if self.background_capture is not None:
+            self.background_capture.close()
+            self.background_capture = None
 
     def next_interval(self):
         """Back off empty scans while keeping claims and newly seen icons responsive."""
@@ -188,6 +217,16 @@ class Watcher:
         return max(self.interval, min(10., self.interval * 2**min(self.empty_rounds-2, 4)))
 
     def tick(self):
+        if self.mode == "background":
+            try:
+                return self.tick_background()
+            except desktop.CaptureUnavailable:
+                self.waiting_for_screen = True
+                self.gate.reset_observations()
+                self.unknown_claims()
+                self.close_background_capture()
+                self.post("status", "后台窗口刚刚变化，等待重新连接。")
+                return
         if not self.active.is_set() or self.stop_event.is_set():
             return
         self.waiting_for_screen = False
@@ -362,6 +401,175 @@ class Watcher:
         else:
             self.post("status", f"正在等待宝箱各自刷新；当前检查间隔 {self.next_interval():g} 秒。")
 
+    @staticmethod
+    def background_signature(frame):
+        origin = getattr(frame, "origin", None)
+        if origin is None:
+            origin = bg.client_origin(frame.render)
+        return (frame.render.hwnd, frame.render.pid, frame.render.rect,
+                frame.input.rect, origin)
+
+    def tick_background(self):
+        """Observe render pixels and address only the paired native input layer."""
+        if not self.active.is_set() or self.stop_event.is_set():
+            return
+        self.waiting_for_screen = False
+        if not desktop.is_desktop_available():
+            self.waiting_for_screen = True
+            self.gate.reset_observations()
+            self.unknown_claims()
+            self.close_background_capture()
+            self.post("status", "等待解锁桌面；后台领取已暂停……")
+            return
+        windows = desktop.find_pet_windows()
+        problem = desktop.input_privilege_problem(windows)
+        if problem:
+            self.active.clear()
+            self.close_background_capture()
+            self.post("privilege", problem)
+            return
+        pairs = bg.find_background_pairs(windows)
+        if not pairs:
+            self.waiting_for_screen = True
+            self.gate.reset_observations()
+            self.unknown_claims()
+            self.close_background_capture()
+            self.post("status", "等待桌宠的后台窗口；请保持桌宠运行且未最小化……")
+            return
+        if self.background_capture is None:
+            self.background_capture = bg.BackgroundCapture()
+        cancelled = lambda: self.stop_event.is_set() or not self.active.is_set()
+        frames = {}
+        for render, input_window in pairs:
+            try:
+                frame = self.background_capture.grab(render, input_window, should_cancel=cancelled)
+                if cancelled():
+                    return
+                if not desktop.window_is_current(frame.render) or not desktop.window_is_current(frame.input):
+                    continue
+                frames[(input_window.hwnd, input_window.pid)] = frame
+            except desktop.CaptureUnavailable:
+                self.waiting_for_screen = True
+                self.gate.reset_observations()
+                self.unknown_claims()
+                self.close_background_capture()
+                self.post("status", "后台画面暂不可用，等待重连；当前保持后台模式。")
+                return
+        now = time.monotonic()
+        for lock in list(self.ledger.locks):
+            frame = frames.get(lock.window_key)
+            claim = next((p for p in self.pending if p.lock is lock), None)
+            if frame is None:
+                self.observe_claim(lock, None, now)
+                continue
+            crop = frame.image
+            x, y, width, height = lock.box
+            if not (0 <= x < x+width <= crop.width and 0 <= y < y+height <= crop.height):
+                self.observe_claim(lock, None, now)
+                continue
+            left, top = max(0, x-4), max(0, y-4)
+            patch = crop.crop((left, top, min(crop.width, x+width+4), min(crop.height, y+height+4)))
+            present = any(max(abs(m.center[0]+left-x-width//2),
+                              abs(m.center[1]+top-y-height//2)) <= 6
+                          for _, m in detect_templates(patch, self.templates, self.threshold))
+            signature = self.background_signature(frame)
+            if present:
+                if claim is not None:
+                    claim.window_rect = frame.input.rect
+                    claim.render_signature = signature
+                self.observe_claim(lock, True, now)
+            else:
+                # Identical/cached frames, a new window origin, or a different
+                # capture source cannot advance a disappearance streak.
+                known = (claim is not None and signature == claim.render_signature
+                         and frame.changed and frame.digest != claim.frame_digest)
+                self.observe_claim(lock, False if known else None, now)
+        if cancelled():
+            return
+        seen, ready_targets = set(), []
+        for window_key, frame in frames.items():
+            for index, match in detect_templates(frame.image, self.templates, self.threshold):
+                if cancelled():
+                    return
+                position = match.center
+                nearby = [key for key, state in self.gate.states.items()
+                          if key[1:] == window_key and key not in seen
+                          and self.gate._near(state.position, position)]
+                if nearby:
+                    key = min(nearby, key=lambda k: sum(abs(a-b) for a, b in zip(self.gate.states[k].position, position)))
+                else:
+                    self.next_track += 1
+                    key = (self.next_track, *window_key)
+                seen.add(key)
+                ready, _ = self.gate.observe(key, position, now)
+                box = (match.x, match.y, match.width, match.height)
+                claim = self.pending_at(window_key, box)
+                if claim is not None:
+                    ready = (self.gate.states[key].stable_frames >= self.gate.required
+                             and claim.retry_due(now) and claim.attempts < CLAIM_MAX_ATTEMPTS)
+                if ready and (claim is not None or not self.ledger.blocked(window_key, box)):
+                    ready_targets.append((frame, index, match, key, claim))
+        for key in set(self.gate.states)-seen:
+            self.gate.observe(key, None, now)
+        self.empty_rounds = 0 if seen else self.empty_rounds+1
+        if not ready_targets:
+            self.post("status", f"后台领取中；等待图案刷新或确认，检查间隔 {self.next_interval():g} 秒。")
+            return
+        selected, index, match, key, claim = min(ready_targets, key=lambda t: t[4] is not None)
+        try:
+            fresh = self.background_capture.grab(selected.render, selected.input, should_cancel=cancelled)
+        except desktop.CaptureUnavailable:
+            self.waiting_for_screen = True
+            self.gate.reset_observations()
+            self.unknown_claims()
+            self.close_background_capture()
+            self.post("status", "后台点击复核失败，等待重新连接。")
+            return
+        if (cancelled() or not desktop.window_is_current(fresh.render)
+                or not desktop.window_is_current(fresh.input)
+                or self.background_signature(fresh) != self.background_signature(selected)):
+            self.gate.reset_observations()
+            return
+        left, top = max(0, match.x-6), max(0, match.y-6)
+        patch = fresh.image.crop((left, top, min(fresh.image.width, match.x+match.width+6),
+                                  min(fresh.image.height, match.y+match.height+6)))
+        checks = [(variant, replace(m, x=m.x+left, y=m.y+top))
+                  for variant, m in detect_templates(patch, self.templates, self.threshold)]
+        checks = [(variant, m) for variant, m in checks
+                  if max(abs(m.center[0]-match.center[0]), abs(m.center[1]-match.center[1])) <= 6]
+        if not checks or cancelled():
+            self.gate.reset_observations()
+            return
+        index, verify = max(checks, key=lambda item: item[1].score)
+        signature = self.background_signature(fresh)
+        origin = bg.client_origin(fresh.render)
+        if origin != signature[-1]:
+            self.gate.reset_observations()
+            return
+        x, y = origin[0]+verify.center[0], origin[1]+verify.center[1]
+        if bg.background_click(x, y, fresh.input, should_cancel=cancelled):
+            sent_at = time.monotonic()
+            self.gate.clicked(key, verify.center, sent_at)
+            window_key = (fresh.input.hwnd, fresh.input.pid)
+            if claim is None:
+                box = (verify.x, verify.y, verify.width, verify.height)
+                self.ledger.clicked(window_key, box, dict(self.templates)[index])
+                lock = next(lock for lock in self.ledger.locks
+                            if lock.window_key == window_key and same_button_box(lock.box, box))
+                claim = PendingClaim(lock, 0, sent_at, sent_at, fresh.input.rect)
+                self.pending.append(claim)
+            claim.attempts += 1
+            claim.last_attempt = claim.visible_since = sent_at
+            claim.window_rect = fresh.input.rect
+            claim.frame_digest = fresh.digest
+            claim.render_signature = signature
+            claim.lock.missing_frames = 0
+            self.clicks += 1
+            self.post("count", str(self.clicks))
+            self.post("log", f"已发送后台宝箱点击（第 {claim.attempts}/3 次）；等待新画面确认图案消失。")
+        else:
+            self.post("status", "后台窗口状态已变化，本次未点击。")
+
 
 class App:
     def __init__(self):
@@ -370,8 +578,8 @@ class App:
         self.tk, self.ttk = tk, ttk
         self.root = tk.Tk()
         self.root.title(f"WuwaTappo 宝箱自动领取 {APP_VERSION}")
-        self.root.geometry("1080x800")
-        self.root.minsize(980, 760)
+        self.root.geometry("1080x840")
+        self.root.minsize(980, 800)
         self.root.configure(background="#f3f2f4")
         self.background_source = load_background()
         self.background_job = None
@@ -381,9 +589,11 @@ class App:
         self.key_states = {}
         self.previewing = False
         self.starting = False
+        self.closing = False
         self.settings = read_config()
         self.threshold = tk.StringVar(value=str(self.settings["threshold"]))
         self.interval = tk.StringVar(value=str(self.settings["interval"]))
+        self.mode = tk.StringVar(value=MODE_NAMES[self.settings["mode"]])
         self.status = tk.StringVar(value="宝箱识别已内置，点击“开始领取”即可。")
         self.count = tk.StringVar(value="已发出点击：0；确认图案消失：0")
 
@@ -409,7 +619,7 @@ class App:
         ttk.Label(frame, text="图案已内置；无宝箱时自动降低检查频率。", style="Chest.TLabel", wraplength=350).pack(anchor="w", pady=(0, 10))
         steps = ("① 点击“开始领取”，等待金色宝箱出现。\n"
                  "② 点击后图案消失，两个宝箱各自刷新、各自领取。\n"
-                 "③ 保持桌面解锁、按钮可见；F8 暂停，F12 退出。")
+                 "③ 后台模式支持遮挡；保持解锁，F8 暂停，F12 退出。")
         ttk.Label(frame, text=steps, style="Chest.TLabel", justify="left", wraplength=350).pack(anchor="w", pady=(0, 12))
         self.admin_row = ttk.Frame(frame, style="Chest.TFrame")
         self.admin_row.pack(fill="x", pady=(0, 4))
@@ -421,6 +631,12 @@ class App:
         ttk.Label(options, text="活跃检查间隔（秒）", style="Chest.TLabel").grid(row=1, column=0, sticky="w", pady=4)
         ttk.Spinbox(options, from_=1, to=30, increment=1, textvariable=self.interval, width=8).grid(row=1, column=1, sticky="e", padx=8, pady=4)
         options.columnconfigure(0, weight=1)
+        mode_row = ttk.Frame(frame, style="Chest.TFrame")
+        mode_row.pack(fill="x", pady=(4, 2))
+        ttk.Label(mode_row, text="运行模式", style="Chest.TLabel").pack(side="left")
+        self.mode_choice = ttk.Combobox(mode_row, textvariable=self.mode, values=list(MODE_NAMES.values()),
+                                       state="readonly", width=23)
+        self.mode_choice.pack(side="right")
         buttons = ttk.Frame(frame, style="Chest.TFrame")
         buttons.pack(fill="x", pady=(10, 4))
         self.start_button = ttk.Button(buttons, text="开始领取  /  F8", style="Primary.Chest.TButton", command=self.toggle)
@@ -481,8 +697,11 @@ class App:
         threshold, interval = float(self.threshold.get()), float(self.interval.get())
         if not .90 <= threshold <= .99 or not 1 <= interval <= 30:
             raise ValueError("相似度应为 0.90～0.99，检查间隔应为 1～30 秒。")
-        CONFIG.write_text(json.dumps({"threshold": threshold, "interval": interval}, indent=2), encoding="utf-8")
-        return threshold, interval
+        mode = next((key for key, label in MODE_NAMES.items() if label == self.mode.get()), None)
+        if mode is None:
+            raise ValueError("请选择有效的运行模式。")
+        CONFIG.write_text(json.dumps({"threshold": threshold, "interval": interval, "mode": mode}, indent=2), encoding="utf-8")
+        return threshold, interval, mode
 
     def toggle(self):
         from tkinter import messagebox
@@ -497,12 +716,14 @@ class App:
                 self.show_privilege_problem(problem)
                 return
             templates = load_templates()
-            threshold, interval = self.get_settings()
+            threshold, interval, mode = self.get_settings()
             self.watcher.close()
             self.starting = True
+            self.mode_choice.configure(state="disabled")
             self.status.set("正在启动识别……")
-            self.root.after(50, lambda: self.finish_start(templates, threshold, interval))
+            self.root.after(50, lambda: self.finish_start(templates, threshold, interval, mode))
         except Exception as exc:
+            self.mode_choice.configure(state="readonly")
             messagebox.showerror("无法启动", str(exc), parent=self.root)
 
     def show_privilege_problem(self, problem):
@@ -520,21 +741,23 @@ class App:
         else:
             self.status.set("管理员启动未完成。当前仍保持暂停，可再次点击管理员启动。")
 
-    def finish_start(self, templates, threshold, interval):
+    def finish_start(self, templates, threshold, interval, mode):
         if not self.starting:
             return
         if self.watcher.thread and self.watcher.thread.is_alive():
-            self.root.after(100, lambda: self.finish_start(templates, threshold, interval))
+            self.root.after(100, lambda: self.finish_start(templates, threshold, interval, mode))
             return
         self.starting = False
-        self.watcher.start(templates, threshold, interval)
-        self.append_log("已开始：连续两帧命中、点击前复核，鼠标键盘空闲后点击。")
+        self.watcher.start(templates, threshold, interval, mode)
+        self.append_log("已开始后台领取：窗口取图和定向消息，不占用鼠标。" if mode == "background"
+                        else "已开始可见点击：连续两帧命中、点击前复核，鼠标键盘空闲后点击。")
         self.start_button.configure(text="暂停领取  /  F8")
         self.status.set("正在等待宝箱出现……")
 
     def pause(self):
         self.starting = False
         self.watcher.pause()
+        self.mode_choice.configure(state="readonly")
         self.start_button.configure(text="继续领取  /  F8")
         self.status.set("已暂停。F8 继续，F12 退出。")
 
@@ -545,7 +768,7 @@ class App:
         self.pause()
         try:
             templates = load_templates()
-            threshold, _ = self.get_settings()
+            threshold, _, mode = self.get_settings()
         except Exception as exc:
             messagebox.showerror("无法识别", str(exc), parent=self.root)
             return
@@ -554,7 +777,7 @@ class App:
 
         def worker():
             try:
-                results = scan_once(templates, threshold)
+                results = scan_background_once(templates, threshold) if mode == "background" else scan_once(templates, threshold)
                 lines = [f"宝箱 {i}：相似度 {r['score']:.3f}，位置（{r['x']}，{r['y']}）"
                          for i, r in enumerate(results, 1)]
                 self.events.put(("preview", "\n".join(lines) if lines else "当前未发现可领取的宝箱，可能正在倒计时或被遮挡。"))
@@ -565,6 +788,8 @@ class App:
 
     def poll(self):
         from tkinter import messagebox
+        if self.closing:
+            return
         try:
             while True:
                 kind, text = self.events.get_nowait()
@@ -599,12 +824,42 @@ class App:
         self.root.after(150, self.poll)
 
     def close(self):
+        if self.closing:
+            return
+        self.closing = True
         self.starting = False
         self.watcher.close()
-        self.root.destroy()
+        self.root.withdraw()
+        self.finish_close()
+
+    def finish_close(self):
+        # Let a pending message release and capture-process cleanup finish.
+        if self.watcher.thread and self.watcher.thread.is_alive():
+            self.root.after(30, self.finish_close)
+        else:
+            self.root.destroy()
 
     def run(self):
         self.root.mainloop()
+
+
+def scan_background_once(templates, threshold):
+    if not desktop.is_desktop_available():
+        raise RuntimeError("桌面已锁定或不是可交互桌面。")
+    pairs = bg.find_background_pairs(desktop.find_pet_windows())
+    result = []
+    manager = bg.BackgroundCapture()
+    try:
+        for render, input_window in pairs:
+            frame = manager.grab(render, input_window)
+            origin = bg.client_origin(frame.render)
+            for index, match in detect_templates(frame.image, templates, threshold):
+                result.append({"variant": index, "window": render.title, "score": round(match.score, 4),
+                               "x": origin[0]+match.center[0], "y": origin[1]+match.center[1],
+                               "recognized": True, "mode": "background"})
+    finally:
+        manager.close()
+    return result
 
 
 def scan_once(templates, threshold):
@@ -674,10 +929,24 @@ def main():
     parser.add_argument("--check", action="store_true", help="Check runtime and WuwaTappo windows; never clicks")
     parser.add_argument("--scan-once", action="store_true", help="Recognize once using built-in chest icons; never clicks")
     parser.add_argument("--self-test", type=Path, metavar="JSON", help="Verify packaged dependencies without clicking; write report to JSON")
+    parser.add_argument("--background-self-test", type=Path, metavar="JSON", help="Verify isolated background SDK worker without input")
+    parser.add_argument("--mode", choices=tuple(MODE_NAMES), help="Capture mode for --scan-once")
     args = parser.parse_args()
     desktop.enable_dpi_awareness()
     if args.self_test is not None:
         raise SystemExit(runtime_self_test(args.self_test))
+    if args.background_self_test is not None:
+        report = {"ok": False, "version": APP_VERSION, "frozen": bool(getattr(sys, "frozen", False))}
+        try:
+            report["backend"] = bg.runtime_self_test(timeout=15)
+            if not report["backend"].get("ok"):
+                raise RuntimeError(str(report["backend"]))
+            report["ok"] = True
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+        args.background_self_test.parent.mkdir(parents=True, exist_ok=True)
+        args.background_self_test.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise SystemExit(0 if report["ok"] else 1)
     if args.check:
         print(json.dumps({"version": APP_VERSION, "python": sys.version.split()[0], "desktop_available": desktop.is_desktop_available(),
                           "input_privilege_problem": desktop.input_privilege_problem(),
@@ -688,11 +957,14 @@ def main():
         return
     if args.scan_once:
         templates = load_templates()
-        print(json.dumps(scan_once(templates, read_config()["threshold"]), ensure_ascii=False, indent=2))
+        scan = scan_background_once if args.mode == "background" else scan_once
+        print(json.dumps(scan(templates, read_config()["threshold"]), ensure_ascii=False, indent=2))
         return
     setup_logging()
     App().run()
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()
