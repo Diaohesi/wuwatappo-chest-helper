@@ -15,7 +15,7 @@
 
 程序采用文件夹打包，启动时不创建临时解包目录，保留了 1.5 版对“Could not create temporary directory”的修复。不能只复制 EXE，也不要直接在 ZIP 中运行。
 
-## 三种领取方式（1.8）
+## 三种领取方式（1.8.1）
 
 | 领取方式 | 鼠标和取图方式 | 遮挡与边框 |
 | --- | --- | --- |
@@ -25,7 +25,7 @@
 
 希望没有黄框且正常使用鼠标时，选择“无黄框领取”；需要在桌宠被其他窗口完全遮住时领取，选择“遮挡后台”。切换方式前先暂停。无黄框模式与遮挡后台模式都向同一桌宠进程的 `DesktopCatInput` 输入层发送消息，不移动桌宠。
 
-界面会随当前选择显示对应说明。首次从 1.7 升级时，原来的遮挡后台设置会切换为无黄框领取；在 1.8 中手动选择的其他方式会保存，后续启动继续使用。
+界面会随当前选择显示对应说明。首次从 1.7 升级时，原来的遮挡后台设置会切换为无黄框领取；在 1.8 及以后版本中手动选择的其他方式会保存，后续启动继续使用。
 
 - “无黄框领取”不会隔着其他应用识别隐藏的宝箱。全屏应用完全遮住桌宠时会等待，退出遮挡后重新识别。
 - “遮挡后台”在本机 WuwaTappo 1.0.4 已实测普通后台领取，以及被不透明全屏测试窗口完全遮住时的识别和领取。两次单击前后，真实鼠标位置、前台窗口和桌宠位置保持不变。
@@ -35,7 +35,24 @@
 - 锁屏时暂停截图和点击，解锁后重新识别。睡眠和休眠期间不能领取。
 - 截图失败、窗口变化或无法确认图像时会等待恢复；无黄框和遮挡后台模式不会自动改用真实鼠标。
 
-**仅识别一次**只显示匹配位置和相似度，不点击。
+**仅识别一次**会显示匹配结果和分阶段诊断，并生成诊断报告，不点击。
+
+## 未识别或未领取时诊断（1.8.1）
+
+先暂停领取，让故障状态下的宝箱保持可见，选择需要排查的模式，再点击 **仅识别一次**。助手会报告环境、窗口、取图和匹配各阶段的结果，并写入数据目录中的 `diagnostics/latest.json`。诊断不点击，也不保存截图。排查问题时请提供这个 JSON 文件。
+
+数据目录默认在 EXE 旁边；如果该目录不可写，则使用 `%LOCALAPPDATA%\WuwaTappoChestHelper`，报告相应位于其中的 `diagnostics/latest.json`。
+
+也可在 EXE 所在目录打开 PowerShell，指定报告位置：
+
+```powershell
+.\WuwaTappoChestHelper.exe --diagnose .\diagnostics\manual.json
+.\WuwaTappoChestHelper.exe --diagnose .\diagnostics\background.json --mode background
+```
+
+`--diagnose JSON` 默认读取已保存的模式；`--mode` 可指定 `borderless`、`background` 或 `visible`，分别对应上表三种方式。命令行诊断同样不点击、不保存截图。
+
+1.8.1 修正窗口边框略微超出屏幕时整窗被跳过的问题，只识别真实屏幕像素覆盖的完整宝箱；识别和预览工作线程也各自启用 DPI 感知，保持截图与窗口坐标一致。这些是兼容性改进，尚未确认遇到问题的那台 Windows 11 电脑的具体原因，也未验证其故障已经解决，请以该电脑生成的诊断报告继续定位。
 
 ## 低占用运行
 
@@ -73,9 +90,10 @@ python auto_chest.py --self-test build/source-self-test.json
 python auto_chest.py --background-self-test build/background-self-test.json
 python auto_chest.py --check
 python auto_chest.py --scan-once
+python auto_chest.py --diagnose build/source-diagnostic.json
 ```
 
-`--check` 只检查运行环境和桌宠窗口；`--scan-once` 读取当前桌面并识别，不发送点击。`--background-self-test` 检查截图组件及独立进程启动，不发送输入。测试图像内置于 `fixture_assets.py`，不需要额外下载。
+`--check` 只检查运行环境和桌宠窗口；`--scan-once` 识别一次，不发送点击。`--diagnose JSON` 生成分阶段诊断报告，默认读取配置中的模式，可用 `--mode` 覆盖。`--background-self-test` 检查截图组件及独立进程启动，不发送输入。测试图像内置于 `fixture_assets.py`，不需要额外下载。
 
 ## 构建 Windows EXE
 
@@ -88,7 +106,7 @@ python build_windows.py --clean
 
 - `WuwaTappoChestHelper.exe`：图形程序入口，与旁边的 `_internal` 一起使用。
 - `_internal/`：内置 Python、界面库、背景图、宝箱图案与后台截图组件，必须完整保留。
-- `WuwaTappoChestHelper-v1.8-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
+- `WuwaTappoChestHelper-v1.8.1-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
 - `SHA256SUMS.txt`：EXE、运行依赖、说明、许可与 ZIP 的 SHA256 校验。
 - `THIRD_PARTY_NOTICES.md` / `licenses/`：第三方组件的来源和许可文本。
 

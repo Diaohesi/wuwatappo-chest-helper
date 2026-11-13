@@ -83,6 +83,16 @@ jobs:
               report = json.loads(destination.read_text(encoding='utf-8'))
               assert report.get('ok') is True and report.get('frozen') is True, report
               print(report)
+          diagnostic = Path('build/frozen-diagnostics.json').resolve()
+          subprocess.run(
+              [str(Path('dist/WuwaTappoChestHelper.exe').resolve()), '--diagnose', str(diagnostic), '--mode', 'borderless'],
+              timeout=90, check=True,
+          )
+          report = json.loads(diagnostic.read_text(encoding='utf-8'))
+          assert report.get('input_sent') is False, report
+          assert report.get('screenshots_saved') is False, report
+          assert report.get('reason'), report
+          print(report)
       - name: Save build artifacts
         uses: actions/upload-artifact@v4
         with:

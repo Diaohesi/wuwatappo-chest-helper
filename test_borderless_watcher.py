@@ -269,8 +269,7 @@ class BorderlessConfigurationTests(unittest.TestCase):
             with patch.object(auto_chest, "CONFIG", config):
                 return auto_chest.read_config()
 
-    def test_version_18_defaults_and_new_settings_use_borderless_mode(self):
-        self.assertEqual(auto_chest.APP_VERSION, "1.8")
+    def test_defaults_and_new_settings_use_borderless_mode(self):
         self.assertEqual(auto_chest.DEFAULTS["mode"], "borderless")
         self.assertEqual(self.read_settings(None)["mode"], "borderless")
 

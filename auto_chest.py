@@ -41,7 +41,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.8"
+APP_VERSION = "1.8.1"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -90,10 +90,25 @@ def load_templates():
 def crop_window(image, origin, window):
     left, top, right, bottom = window.rect
     x, y = left-origin[0], top-origin[1]
-    # Partly off-screen windows are skipped rather than padding with invented pixels.
-    if x < 0 or y < 0 or x+right-left > image.width or y+bottom-top > image.height:
+    width, height = right-left, bottom-top
+    # Invisible frame margins may extend beyond a monitor. Keep coordinates
+    # relative to the original window; padded pixels are never click/absence
+    # evidence (every relevant region is checked against the actual capture).
+    if (width <= 0 or height <= 0 or width > image.width+128 or height > image.height+128
+            or x >= image.width or y >= image.height or x+width <= 0 or y+height <= 0):
         return None
-    return image.crop((x, y, x+right-left, y+bottom-top))
+    return image.crop((x, y, x+width, y+height))
+
+
+def rect_is_captured(rect, origin, image):
+    left, top, right, bottom = rect
+    return (origin[0] <= left < right <= origin[0]+image.width
+            and origin[1] <= top < bottom <= origin[1]+image.height)
+
+
+def match_is_captured(match, window, origin, image):
+    left, top = window.rect[0]+match.x, window.rect[1]+match.y
+    return rect_is_captured((left, top, left+match.width, top+match.height), origin, image)
 
 
 class Watcher:
@@ -193,6 +208,7 @@ class Watcher:
 
     def run(self):
         try:
+            desktop.enable_dpi_awareness()
             while not self.stop_event.is_set():
                 self.wake_event.clear()
                 if not self.active.is_set():
@@ -317,7 +333,8 @@ class Watcher:
                           window.rect[0]+min(crop.width, x+width+4),
                           window.rect[1]+min(crop.height, y+height+4))
                 unchanged = claim is None or claim.window_rect == window.rect
-                known = unchanged and desktop.can_observe_disappearance(region, window)
+                known = (unchanged and rect_is_captured(region, origin, image)
+                         and desktop.can_observe_disappearance(region, window))
                 self.observe_claim(lock, False if known else None, now)
         if not self.active.is_set():
             return
@@ -332,6 +349,8 @@ class Watcher:
             for index, match in matches[window.rect]:
                 if self.stop_event.is_set() or not self.active.is_set():
                     return
+                if not match_is_captured(match, window, origin, image):
+                    continue
                 position = match.center
                 if not desktop.point_hits_window(window.rect[0]+position[0], window.rect[1]+position[1], window):
                     continue
@@ -385,7 +404,8 @@ class Watcher:
                 checks = [(variant, replace(m, x=m.x+left, y=m.y+top))
                           for variant, m in detect_templates(patch, self.templates, self.threshold)]
             checks = [(variant, m) for variant, m in checks
-                      if max(abs(m.center[0]-match.center[0]), abs(m.center[1]-match.center[1])) <= 6]
+                      if max(abs(m.center[0]-match.center[0]), abs(m.center[1]-match.center[1])) <= 6
+                      and match_is_captured(m, window, fresh_origin, fresh)]
             if not checks:
                 self.gate.reset_observations()
                 return
@@ -816,10 +836,14 @@ class App:
 
         def worker():
             try:
-                results = scan_background_once(templates, threshold) if mode == "background" else scan_once(templates, threshold)
-                lines = [f"宝箱 {i}：相似度 {r['score']:.3f}，位置（{r['x']}，{r['y']}）"
-                         for i, r in enumerate(results, 1)]
-                self.events.put(("preview", "\n".join(lines) if lines else "当前未发现可领取的宝箱，可能正在倒计时或被遮挡。"))
+                desktop.enable_dpi_awareness()
+                from chest_diagnostics import collect_diagnostics, summarize_diagnostics
+                report = collect_diagnostics(templates, threshold, mode, crop_window)
+                report["helper_version"] = APP_VERSION
+                destination = BASE / "diagnostics" / "latest.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                self.events.put(("preview", summarize_diagnostics(report)+f"\n诊断文件：{destination}"))
             except Exception as exc:
                 self.events.put(("preview", f"识别失败：{exc}"))
 
@@ -916,6 +940,8 @@ def scan_once(templates, threshold):
         if window.rect not in cache:
             cache[window.rect] = detect_templates(crop, templates, threshold)
         for index, match in cache[window.rect]:
+            if not match_is_captured(match, window, origin, image):
+                continue
             x, y = window.rect[0]+match.center[0], window.rect[1]+match.center[1]
             if desktop.point_hits_window(x, y, window):
                 result.append({"variant": index, "window": window.title, "score": round(match.score, 4),
@@ -970,6 +996,7 @@ def main():
     parser.add_argument("--scan-once", action="store_true", help="Recognize once using built-in chest icons; never clicks")
     parser.add_argument("--self-test", type=Path, metavar="JSON", help="Verify packaged dependencies without clicking; write report to JSON")
     parser.add_argument("--background-self-test", type=Path, metavar="JSON", help="Verify isolated background SDK worker without input")
+    parser.add_argument("--diagnose", type=Path, metavar="JSON", help="Write read-only recognition diagnostics without input or saved screenshots")
     parser.add_argument("--mode", choices=tuple(MODE_NAMES), help="Capture mode for --scan-once")
     args = parser.parse_args()
     desktop.enable_dpi_awareness()
@@ -987,6 +1014,14 @@ def main():
         args.background_self_test.parent.mkdir(parents=True, exist_ok=True)
         args.background_self_test.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         raise SystemExit(0 if report["ok"] else 1)
+    if args.diagnose is not None:
+        from chest_diagnostics import collect_diagnostics
+        report = collect_diagnostics(load_templates(), read_config()["threshold"],
+                                     args.mode or read_config()["mode"], crop_window)
+        report["helper_version"] = APP_VERSION
+        args.diagnose.parent.mkdir(parents=True, exist_ok=True)
+        args.diagnose.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
     if args.check:
         print(json.dumps({"version": APP_VERSION, "python": sys.version.split()[0], "desktop_available": desktop.is_desktop_available(),
                           "input_privilege_problem": desktop.input_privilege_problem(),

@@ -307,9 +307,11 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(self.safe_click.call_args.args, (-82, -44, self.popup))
         self.assertTrue(callable(self.safe_click.call_args.kwargs["should_cancel"]))
 
-    def test_partly_offscreen_crop_is_skipped(self):
+    def test_partly_offscreen_crop_preserves_screen_alignment(self):
         offscreen = WindowInfo(2, 33, "Toast", (-5, 0, 105, 80))
-        self.assertIsNone(auto_chest.crop_window(self.frame, (0, 0), offscreen))
+        crop = auto_chest.crop_window(self.frame, (0, 0), offscreen)
+        self.assertEqual(crop.size, (110, 80))
+        self.assertEqual(crop.getpixel((5, 0)), self.frame.getpixel((0, 0)))
 
 
 if __name__ == "__main__":
