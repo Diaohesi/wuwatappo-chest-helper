@@ -135,7 +135,9 @@ class ElevationRequestTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.directory = self.stack.enter_context(tempfile.TemporaryDirectory())
-        root = Path(self.directory) / "含 空格的目录"
+        # Hosted Windows runners may expose TEMP through an 8.3 path alias.
+        # Match the canonical paths used when relaunching the application.
+        root = Path(self.directory).resolve() / "含 空格的目录"
         root.mkdir()
         self.script = root / "宝箱助手.py"
         self.script.write_text("# test fixture only\n", encoding="utf-8")
