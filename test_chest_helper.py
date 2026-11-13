@@ -262,6 +262,38 @@ class WatcherTests(unittest.TestCase):
         self.capture.assert_not_called()
         self.safe_click.assert_not_called()
 
+    def test_empty_search_backs_off_and_new_icon_restores_fast_confirmation(self):
+        self.frame = self.make_frame()
+        self.tick(8)
+        self.assertEqual(self.watcher.next_interval(), 10.)
+        self.safe_click.assert_not_called()
+        self.frame = self.make_frame((20, 30))
+        self.tick()
+        self.assertEqual(self.watcher.next_interval(), self.watcher.interval)
+        self.safe_click.assert_not_called()  # Still requires two new frames.
+        self.tick()
+        self.safe_click.assert_called_once()
+
+    def test_pending_claim_keeps_fast_checks_through_missing_frames(self):
+        self.tick(2)
+        self.frame = self.make_frame()
+        # An occluded pending claim must stay unconfirmed even after backoff.
+        self.owner = 0
+        self.tick(8)
+        self.assertTrue(self.watcher.pending)
+        self.assertEqual(self.watcher.next_interval(), self.watcher.interval)
+        self.assertEqual(self.watcher.confirmed, 0)
+
+    def test_screen_unavailable_wait_is_interruptible_and_recovers_to_fast_scan(self):
+        with patch.object(auto_chest.desktop, "is_desktop_available", return_value=False):
+            self.tick()
+        self.assertEqual(self.watcher.next_interval(), 15.)
+        self.capture.assert_not_called()
+        self.tick()
+        self.assertEqual(self.watcher.next_interval(), self.watcher.interval)
+        self.watcher.close()
+        self.assertTrue(self.watcher.stop_event.wait(self.watcher.next_interval()))
+
     def test_negative_coordinate_crop_and_click(self):
         self.origin = (-110, -80)
         self.rect = (-110, -80, 0, 0)

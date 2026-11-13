@@ -11,7 +11,9 @@ desktop so its background is included.  Transparent PNGs are rejected instead
 of silently converting transparent pixels to black or white.
 
 Correlation uses NumPy FFTs and integral images, without a sliding-window
-tensor.  Coordinates returned by find_match are relative to its input image.
+tensor. High-threshold searches first reject impossible average colours and
+score the remaining patches directly; dense candidate sets use FFTs instead.
+Coordinates returned by find_match are relative to its input image.
 """
 
 from __future__ import annotations
@@ -106,15 +108,124 @@ def _fft_length(size: int) -> int:
     return best
 
 
+class _PreparedImage:
+    """Share one frame's lazy working arrays across its template variants.
+
+    Nothing is cached between frames, so large desktop arrays are released
+    after a search rather than being retained for the entire monitoring run.
+    """
+    def __init__(self, image: Image.Image):
+        self.rgb = _opaque_rgb(image)
+        self.pixels = np.asarray(self.rgb)
+        self.height, self.width = self.pixels.shape[:2]
+        self.fft_shape = (_fft_length(self.height), _fft_length(self.width))
+        self._integrals = None
+        self._image_ffts = None
+        self._squared_integral = None
+
+    @property
+    def integrals(self):
+        if self._integrals is None:
+            self._integrals = [_integral(self.pixels[:, :, c]) for c in range(3)]
+        return self._integrals
+
+    @property
+    def image_ffts(self):
+        if self._image_ffts is None:
+            self._image_ffts = [np.fft.rfft2(self.pixels[:, :, c], s=self.fft_shape)
+                                for c in range(3)]
+        return self._image_ffts
+
+    @property
+    def squared_integral(self):
+        if self._squared_integral is None:
+            squared = np.zeros((self.height, self.width), dtype=np.float64)
+            for channel in range(3):
+                squared += np.square(self.pixels[:, :, channel], dtype=np.float64)
+            self._squared_integral = _integral(squared)
+        return self._squared_integral
+
+
+_SPARSE_MAX_CANDIDATES = 4096
+
+
+def _sparse_candidates(prepared, target, centered, means, template_energy,
+                       scale, threshold, max_results):
+    """Return exact sparse scores, or None when a dense FFT is cheaper.
+
+    A passing score requires MSE <= -2*45**2*log(threshold), since NCC <= 1.
+    Squared differences of channel means are a lower bound on pixel MSE.
+    This necessary condition discards ordinary desktop colours without any
+    template FFT; it does not introduce an approximate matching threshold.
+    """
+    if threshold < .90 or threshold == 1.0:
+        return None
+    height, width = target.shape[:2]
+    count = height * width
+    bound = np.zeros((prepared.height-height+1, prepared.width-width+1), dtype=np.float64)
+    for channel in range(3):
+        difference = _window_sum(prepared.integrals[channel], width, height)
+        difference /= count
+        difference -= means[channel]
+        np.square(difference, out=difference)
+        bound += difference
+    del difference
+    # A small tolerance protects equality at the acceptance boundary from
+    # floating point roundoff in the necessary-condition calculation.
+    limit = -6.0 * 45.0**2 * math.log(threshold)
+    possible = bound <= limit + 1e-8
+    candidate_count = int(np.count_nonzero(possible))
+    if candidate_count > _SPARSE_MAX_CANDIDATES:
+        return None
+    ys, xs = np.nonzero(possible)
+    del bound, possible
+    if not candidate_count:
+        return []
+    scores = np.zeros(candidate_count, dtype=np.float64)
+    rows = np.arange(height)[None, :, None]
+    columns = np.arange(width)[None, None, :]
+    # Bound temporary patch storage independently of template/UI scale.
+    batch_size = max(1, min(256, 131072 // (count * 3)))
+    target_squared = float(np.sum(target * target))
+    for start in range(0, candidate_count, batch_size):
+        end = min(candidate_count, start+batch_size)
+        patches = prepared.pixels[ys[start:end, None, None]+rows,
+                                  xs[start:end, None, None]+columns].astype(np.float64)
+        channel_sums = patches.sum(axis=(1, 2))
+        squared = np.einsum("nijk,nijk->n", patches, patches)
+        energy = squared - np.sum(channel_sums * channel_sums, axis=1) / count
+        correlation = np.einsum("nijk,ijk->n", patches, centered)
+        values = correlation / np.sqrt(np.maximum(energy, 1.0) * template_energy)
+        np.clip(values, 0.0, 1.0, out=values)
+        values[energy <= 1.0] = 0.0
+        original_dot = correlation + channel_sums @ means
+        mse = np.maximum((squared - 2.0*original_dot + target_squared) / (3*count), 0.0)
+        values *= np.exp(-mse / (2.0 * 45.0**2))
+        scores[start:end] = values
+    matches = []
+    for _ in range(max_results):
+        best = int(np.argmax(scores))
+        score = float(scores[best])
+        if score <= 0 or score < threshold:
+            break
+        x, y = int(xs[best]), int(ys[best])
+        matches.append(Match(x, y, width, height, score, scale))
+        scores[(np.abs(xs-x) <= max(1, width//2))
+               & (np.abs(ys-y) <= max(1, height//2))] = 0.0
+    return matches
+
+
 def _find_candidates(
     image: Image.Image,
     template: Image.Image,
     scales: tuple[float, ...] = (1.0,),
     threshold: float = 0.0,
     max_results: int = 1,
+    _prepared: _PreparedImage | None = None,
 ) -> list[Match]:
     """Compute each score map once, then extract spatially distinct peaks."""
-    rgb = _opaque_rgb(image)
+    prepared = _prepared if _prepared is not None else _PreparedImage(image)
+    rgb = prepared.rgb
     template_rgb = _opaque_rgb(template)
     validate_template(template_rgb)
     if not scales:
@@ -144,18 +255,8 @@ def _find_candidates(
     if not variants:
         return []
 
-    pixels = np.asarray(rgb)
-    image_height, image_width = pixels.shape[:2]
-    fft_shape = (_fft_length(image_height), _fft_length(image_width))
-    # A circular correlation of size >= the image has the same values as the
-    # linear correlation in the valid top-left region, where nothing wraps.
-    image_ffts = [np.fft.rfft2(pixels[:, :, c], s=fft_shape) for c in range(3)]
-    integrals = [_integral(pixels[:, :, c]) for c in range(3)]
-    squared = np.zeros((image_height, image_width), dtype=np.float64)
-    for channel in range(3):
-        squared += np.square(pixels[:, :, channel], dtype=np.float64)
-    squared_integral = _integral(squared)
-    del squared
+    image_height, image_width = prepared.height, prepared.width
+    fft_shape = prepared.fft_shape
 
     candidates: list[Match] = []
     for scale, variant in variants:
@@ -167,6 +268,14 @@ def _find_candidates(
         template_energy = float(np.sum(centered * centered))
         if template_energy < 16.0 * count * 3:
             continue
+        sparse = _sparse_candidates(prepared, target, centered, means,
+                                    template_energy, scale, threshold, max_results)
+        if sparse is not None:
+            candidates.extend(sparse)
+            continue
+        # A circular correlation of size >= the image has the same values as
+        # linear correlation in the valid region, where nothing wraps.
+        image_ffts = prepared.image_ffts
         spectrum = np.zeros_like(image_ffts[0])
         for channel in range(3):
             target_fft = np.fft.rfft2(centered[:, :, channel], s=fft_shape)
@@ -177,11 +286,11 @@ def _find_candidates(
         ].copy()
         del spectrum
 
-        patch_squared_sum = _window_sum(squared_integral, width, height)
+        patch_squared_sum = _window_sum(prepared.squared_integral, width, height)
         patch_energy = patch_squared_sum.copy()
         original_dot = correlation.copy()
         for channel in range(3):
-            channel_sum = _window_sum(integrals[channel], width, height)
+            channel_sum = _window_sum(prepared.integrals[channel], width, height)
             patch_energy -= channel_sum * channel_sum / count
             original_dot += means[channel] * channel_sum
         del channel_sum
@@ -249,6 +358,25 @@ def find_matches(
     if not isinstance(max_results, int) or max_results <= 0:
         raise ValueError("max_results must be a positive integer")
     return _find_candidates(image, template, scales, threshold, max_results)
+
+
+def find_matches_many(
+    image: Image.Image,
+    templates: list[Image.Image],
+    threshold: float = .94,
+    max_results: int = 8,
+) -> list[list[Match]]:
+    """Search several fixed-size templates while preparing the image once."""
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("Threshold must be finite and between zero and one")
+    if not isinstance(max_results, int) or max_results <= 0:
+        raise ValueError("max_results must be a positive integer")
+    if not templates:
+        return []
+    prepared = _PreparedImage(image)
+    return [_find_candidates(image, template, threshold=threshold,
+                             max_results=max_results, _prepared=prepared)
+            for template in templates]
 
 
 def _self_test() -> None:

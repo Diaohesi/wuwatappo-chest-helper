@@ -8,7 +8,7 @@ from __future__ import annotations
 from PIL import Image
 
 from chest_assets import load_builtin_templates
-from chest_matcher import Match, find_matches
+from chest_matcher import Match, find_matches_many
 
 
 def _same_target(a: Match, b: Match) -> bool:
@@ -25,11 +25,13 @@ def detect_templates(
     """Detect all ready icons, merging overlapping matches across variants.
 
     Templates contain only the icon's opaque interior, so pet pixels and
-    desktop background are outside the comparison region. Each template's
-    FFT score map is computed once even when several copies are on screen.
+    desktop background are outside the comparison region. Image preparation
+    is shared between variants. Most desktop colours are
+    rejected before FFT work; every remaining match keeps the original score.
     """
-    candidates = [(index, match) for index, template in templates
-                  for match in find_matches(image, template, threshold=threshold)]
+    searches = find_matches_many(image, [template for _, template in templates], threshold=threshold)
+    candidates = [(index, match) for (index, _), matches in zip(templates, searches)
+                  for match in matches]
     found: list[tuple[int, Match]] = []
     for candidate in sorted(candidates, key=lambda item: item[1].score, reverse=True):
         if not any(_same_target(candidate[1], previous[1]) for previous in found):

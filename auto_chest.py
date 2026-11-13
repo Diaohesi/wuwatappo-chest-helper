@@ -33,7 +33,7 @@ if getattr(sys, "frozen", False):
         BASE.mkdir(parents=True, exist_ok=True)
 CONFIG = BASE / "config.json"
 DEFAULTS = {"threshold": 0.94, "interval": 2.0}
-APP_VERSION = "1.5"
+APP_VERSION = "1.6"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -97,6 +97,8 @@ class Watcher:
         self.confirmed = 0
         self.pending: list[PendingClaim] = []
         self.next_track = 0
+        self.empty_rounds = 0
+        self.waiting_for_screen = False
 
     def post(self, kind, text):
         self.events.put((kind, text))
@@ -109,6 +111,8 @@ class Watcher:
         self.threshold, self.interval = threshold, interval
         self.gate.reset_observations()
         self.reset_pending_attempts()
+        self.empty_rounds = 0
+        self.waiting_for_screen = False
         self.stop_event.clear()
         self.active.set()
         self.thread = threading.Thread(target=self.run, daemon=True, name="chest-watcher")
@@ -163,10 +167,10 @@ class Watcher:
             while not self.stop_event.is_set():
                 if not self.active.is_set():
                     self.gate.reset_observations()
-                    self.stop_event.wait(.15)
+                    self.stop_event.wait(.5)
                     continue
                 self.tick()
-                self.stop_event.wait(self.interval)
+                self.stop_event.wait(self.next_interval())
         except desktop.PrivilegeMismatch as exc:
             self.post("privilege", str(exc))
             self.active.clear()
@@ -175,16 +179,27 @@ class Watcher:
             self.post("error", "识别已暂停，详情见 logs/auto_chest.log。")
             self.active.clear()
 
+    def next_interval(self):
+        """Back off empty scans while keeping claims and newly seen icons responsive."""
+        if self.waiting_for_screen:
+            return max(self.interval, 15.)
+        if self.pending or self.empty_rounds < 3:
+            return self.interval
+        return max(self.interval, min(10., self.interval * 2**min(self.empty_rounds-2, 4)))
+
     def tick(self):
         if not self.active.is_set() or self.stop_event.is_set():
             return
+        self.waiting_for_screen = False
         if not desktop.is_desktop_available():
+            self.waiting_for_screen = True
             self.gate.reset_observations()
             self.unknown_claims()
             self.post("status", "等待解锁桌面……")
             return
         windows = desktop.find_pet_windows()
         if not windows:
+            self.waiting_for_screen = True
             for key in list(self.gate.states):
                 self.gate.observe(key, None, time.monotonic())
             self.unknown_claims()
@@ -198,6 +213,7 @@ class Watcher:
         try:
             image, origin = desktop.capture_desktop()
         except desktop.CaptureUnavailable:
+            self.waiting_for_screen = True
             self.gate.reset_observations()
             self.unknown_claims()
             self.post("status", "暂时无法读取桌面画面，正在等待恢复；不会点击或确认领取。")
@@ -282,6 +298,7 @@ class Watcher:
                     ready_targets.append((window, index, match, key, claim))
         for key in set(self.gate.states)-seen:
             self.gate.observe(key, None, time.monotonic())
+        self.empty_rounds = 0 if seen else self.empty_rounds+1
         if ready_targets:
             if desktop.user_idle_seconds() < 1.5:
                 self.post("status", "宝箱已识别，等鼠标和键盘空闲 1.5 秒后点击……")
@@ -343,7 +360,7 @@ class Watcher:
         if self.pending:
             self.post("status", f"有 {len(self.pending)} 个已发点击等待确认；图案仍在时最多尝试 3 次。")
         else:
-            self.post("status", f"正在等待宝箱各自刷新；每轮间隔 {self.interval:g} 秒。")
+            self.post("status", f"正在等待宝箱各自刷新；当前检查间隔 {self.next_interval():g} 秒。")
 
 
 class App:
@@ -389,7 +406,7 @@ class App:
         self.canvas.bind("<Configure>", self.queue_background)
         ttk.Label(frame, text="WuwaTappo 宝箱助手", style="Chest.TLabel", font=("Microsoft YaHei UI", 17, "bold")).pack(anchor="w")
         ttk.Label(frame, text=f"自动领取  /  {APP_VERSION}", style="Chest.TLabel", foreground="#963b50").pack(anchor="w", pady=(3, 10))
-        ttk.Label(frame, text="宝箱图案已内置，更换桌宠也能直接使用。", style="Chest.TLabel", wraplength=350).pack(anchor="w", pady=(0, 10))
+        ttk.Label(frame, text="图案已内置；无宝箱时自动降低检查频率。", style="Chest.TLabel", wraplength=350).pack(anchor="w", pady=(0, 10))
         steps = ("① 点击“开始领取”，等待金色宝箱出现。\n"
                  "② 点击后图案消失，两个宝箱各自刷新、各自领取。\n"
                  "③ 保持桌面解锁、按钮可见；F8 暂停，F12 退出。")
@@ -401,7 +418,7 @@ class App:
         options.pack(fill="x", pady=5)
         ttk.Label(options, text="相似度阈值", style="Chest.TLabel").grid(row=0, column=0, sticky="w", pady=4)
         ttk.Spinbox(options, from_=.90, to=.99, increment=.01, textvariable=self.threshold, width=8).grid(row=0, column=1, sticky="e", padx=8, pady=4)
-        ttk.Label(options, text="检查间隔（秒）", style="Chest.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(options, text="活跃检查间隔（秒）", style="Chest.TLabel").grid(row=1, column=0, sticky="w", pady=4)
         ttk.Spinbox(options, from_=1, to=30, increment=1, textvariable=self.interval, width=8).grid(row=1, column=1, sticky="e", padx=8, pady=4)
         options.columnconfigure(0, weight=1)
         buttons = ttk.Frame(frame, style="Chest.TFrame")
@@ -419,7 +436,7 @@ class App:
                            background="#f2f0f4", foreground="#47414f", relief="flat", padx=10, pady=8)
         self.log.pack(fill="both", expand=True, pady=(8, 0))
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self.root.after(100, self.poll)
+        self.root.after(150, self.poll)
         logging.info("宝箱助手 %s 已启动，使用内置图案；当前保持暂停。", APP_VERSION)
         problem = desktop.input_privilege_problem()
         if problem:
@@ -579,7 +596,7 @@ class App:
                 if not self.previewing:
                     self.toggle()
             self.key_states[vk] = down
-        self.root.after(100, self.poll)
+        self.root.after(150, self.poll)
 
     def close(self):
         self.starting = False
