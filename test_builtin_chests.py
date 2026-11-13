@@ -71,7 +71,7 @@ class BuiltinChestTests(unittest.TestCase):
                 self.assertEqual(centers(detect_chests(image)), expected)
 
     def test_visual_variants_are_not_bound_to_upper_and_lower_positions(self):
-        first, second = [template for _, template in load_builtin_templates()]
+        first, second = [template for _, template in load_builtin_templates()[:2]]
         image = Image.new("RGB", (150, 100), (18, 27, 36))
         image.paste(second, (90, 10))
         image.paste(first, (90, 60))
@@ -119,7 +119,7 @@ class BuiltinChestTests(unittest.TestCase):
             Image.new("RGB", (20, 20), "blue").save(old_templates / "chest_2.png")
             with patch.object(auto_chest, "BASE", Path(directory)):
                 loaded = auto_chest.load_templates()
-        self.assertEqual(len(loaded), 2)
+        self.assertEqual(len(loaded), len(expected))
         for (_, actual), (_, reference) in zip(loaded, expected):
             np.testing.assert_array_equal(np.asarray(actual), np.asarray(reference))
 
@@ -214,7 +214,7 @@ class BuiltinWatcherTests(unittest.TestCase):
         self.assertLess(self.click_events[1][0]-self.click_events[0][0], 5.)
 
     def test_visual_variant_change_at_same_location_does_not_bypass_click_lock(self):
-        first, second = [template for _, template in load_builtin_templates()]
+        first, second = [template for _, template in load_builtin_templates()[:2]]
         self.frame = Image.new("RGB", self.frame.size, (18, 27, 36))
         self.frame.paste(first, (50, 30))
         self.tick(2)

@@ -101,9 +101,9 @@ def _search(image, templates, threshold):
     best = []
     skipped = not matches and image.width*image.height > MAX_BEST_SCORE_PIXELS
     if not matches and not skipped:
-        # Manual diagnostics only: keep this fixed-size search bounded to two
-        # templates per source rect, without guessing UI scales or clicking.
-        for variant, template in templates[:2]:
+        # Manual diagnostics only: inspect each embedded native-size variant
+        # within the pixel budget, without guessing UI scales or clicking.
+        for variant, template in templates:
             match = find_match(image, template, scales=(1.0,))
             if match is not None:
                 best.append((variant, match))

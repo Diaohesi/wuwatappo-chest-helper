@@ -41,7 +41,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -964,11 +964,14 @@ def runtime_self_test(destination):
         from PIL import Image, ImageTk
         background = load_background()
         templates = load_templates()
-        screen = Image.new("RGB", (160, 100), (30, 45, 60))
-        for (_, template), position in zip(templates, ((20, 20), (90, 60))):
-            screen.paste(template, position)
+        cell_width = max(template.width for _, template in templates) + 30
+        cell_height = max(template.height for _, template in templates) + 30
+        screen = Image.new("RGB", (cell_width * len(templates), cell_height), (30, 45, 60))
+        for position, (_, template) in enumerate(templates):
+            screen.paste(template, (position * cell_width + 15, 15))
         detections = detect_templates(screen, templates, .94)
-        if len(detections) != 2:
+        if (len(detections) != len(templates)
+                or {variant for variant, _ in detections} != {variant for variant, _ in templates}):
             raise RuntimeError("Built-in recognition self-test failed")
         root = tk.Tk()
         root.withdraw()
@@ -977,6 +980,7 @@ def runtime_self_test(destination):
             raise RuntimeError("Embedded background has unexpected dimensions")
         root.update_idletasks()
         report.update(ok=True, background=list(background.size), detected_chests=len(detections),
+                      template_variants=len(templates),
                       tk=str(root.tk.call("info", "patchlevel")), default_mode=DEFAULTS["mode"],
                       modes=list(MODE_NAMES), mode_descriptions=MODE_DESCRIPTIONS)
     except Exception as exc:

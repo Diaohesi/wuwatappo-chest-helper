@@ -13,8 +13,8 @@ from io import BytesIO
 
 from PIL import Image
 
-# The supplied screenshots have fixed-size UI. Physical display/UI scaling
-# can be handled by the caller using chest_matcher's explicit scales argument.
+# Exact opaque pixels from the supplied legacy and larger Windows 11 UI.
+# Retaining both native sizes avoids interpolation and keeps existing scores.
 BUILTIN_SCALES = (1.0,)
 
 _TEMPLATE_PNGS = (
@@ -35,6 +35,28 @@ _TEMPLATE_PNGS = (
         'BDCZzI6Pe5V7t5IkrH/uaGPya8iFsdYSUbEYep4HwBh79LbFOPuHDYCvPOdcltF0mjlnOWebWxs71YoQawSllASQ'
         'uyfm87nW+uH21uGrvXI5SlM6bfedc8YYrZUxRgKI41BKsTjrQt7w17jTPi8lwfnFZZZR/kUSwJOnD35cDM6631eJ'
         '8Xjy7qgpOL+6mmL1AYY7mxtMtWrWuoxm13O1Ju5/MOZ54g+8QMzvlf6lqwAAAABJRU5ErkJggg=='
+    ),
+    (
+        'iVBORw0KGgoAAAANSUhEUgAAABMAAAAPCAIAAACJJmN7AAACDElEQVR42o1STWsTURS9d97LfGQSm1QJiVQoUWqhCIoW60YU'
+        'F+Ku6s/wF7j2T/gPXAj+AelCoTs1UJDYNtYSJWlKM2JnMvPem3nvukiIyWTjWd77zrnnnvtw9/WL1pfvUmZABDPwPMcv2efn'
+        'iZIZzKNYdO4/2GA3a1Wl8j0A2Lp3/eGjG8FZFARhrpWm+uTkt5Vpkych+L7TvFazbb7arLmejZh/Eo8UrzcqUqbTEmesUa+u'
+        'b6wsLfmIuLbesO1CZ783DEIiIiIAQMRS2cXBzqs0/eeWMSyXPNstMMsCACLKtJGJCkcCZnLw3AJ/93aXMQ44tgmAeGXl0q3b'
+        'q5VqiXOmVDYY/Gl9OhoOQwJCmNB93+GD02HR8xljU712+LPbPd1+tlVd9o86g48fvkqRmvnko1BYpE0cx8boadUYiiJxeNCP'
+        'Inl40E+EytHGW3AAIKPjOHZdj3M2tkwEe3vHvV7Q7wdAiycDIrImc7SO45GUiibySAaSRDLGYOEmxhgpJZ/VkSJRSrmu6/ve'
+        '9vO7lUrx+MfZzvuWUno8h4iyLBVCAhmet2F0ksSOgyXfsW1eb1wgIiGEMUbrbOKICAAsztniEkmi2u3uKBKtz50wDJWSWZaS'
+        'MUA0pjmujW9ePt3/9ovM/B9E9Dy7UOBSpkqmNJstIuPW5p01/vjJZrN5OYoS+D9YFi5fLDevNv4CBdIjc2/9hEEAAAAASUVO'
+        'RK5CYII='
+    ),
+    (
+        'iVBORw0KGgoAAAANSUhEUgAAABQAAAAPCAIAAABr+ngCAAACE0lEQVR42o1STU9TURA9c9/t61OK1CpSbKLEQlyRGD8XujH+'
+        'wf4RXbkQ48aQ6IIQeRpjFUVQKAVDKZb7vu67My6K9FE3ntXNnTk5Z84MubDV75tXS2Gn02MWFEBEVxsXm83ZMNw86hucheeR'
+        'ArDXPdrdPRxjgkhrdfvu/OKta/PNuqc9IirWnRMNgFm05xUrpEhr7/L0hXp9qqR1c2F2e+fgqG+cYxlKiAAgF7Yik6yubAwG'
+        '8QlVpBz4d+7PVypl7SkQiYjN8r39wcf3m8wCERAB0ABKvr42N21MeqocBH5Q1ooIf60qT1Wr5+duzBSn0wDa7e0Xz1fKQVCY'
+        'iiYmytfnZh4+uhmc83u94zfL7W73MEktZERWALI0j9MsjpM8Z+fEOXGOB4O4/enn/v5vl7v1L92trV9RlLpRg5wEBhEwp2lK'
+        'pEql0lBfBDbncO17lrn1zzujqArQo6dIksTM7Pu+Umr4s/3joLPTs9bJv9Sh7SI/y9IoMnmei4jyVH22eu/BwpWZqeIqRURE'
+        'rLV6eA9FPjsXRUYpb6paefxksTIZNBq1Z0/f5rkFwMzW2jy3zKwBKEVEdMaYCLvcOQsIAGtdEifGJCIiwqeBawC1S5Mlv5Rl'
+        'Z9YAwBwnL5dWG43pb187xkTseOx+yYWtLLNr7zaWX38wx/F4JgQCCQRjeRHVapPkwhaLCEuaZI4Z/wcCeZ76A20+TWSytCvp'
+        'AAAAAElFTkSuQmCC'
     ),
 )
 

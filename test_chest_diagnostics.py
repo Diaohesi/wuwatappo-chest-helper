@@ -138,12 +138,11 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(candidate["owner"]["pid"], 77)
 
     def test_empty_pattern_has_bounded_fixed_size_best_score_diagnostics(self):
-        self.templates = self.templates + [self.templates[0]]
         with patch.object(diagnostics, "detect_templates", return_value=[]), \
                 patch.object(diagnostics, "find_match", return_value=Match(20, 20, 15, 12, .73)) as best:
             report = self.collect()
         self.assertEqual(report["reason"], "no_pattern")
-        self.assertEqual(best.call_count, 2)
+        self.assertEqual(best.call_count, len(self.templates))
         self.assertTrue(all(call.kwargs["scales"] == (1.0,) for call in best.call_args_list))
         self.assertTrue(all(not c["accepted"] for c in report["best_matches"]))
         self.assertIn("0.730", diagnostics.summarize_diagnostics(report))
