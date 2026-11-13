@@ -3,8 +3,9 @@
 The tightly cropped chest interiors exclude the pet, transparent window, and
 outer desktop background. These are visual variants of the same chest UI,
 not identities for the two independently refreshing chest locations.
-No screenshots, external asset files, network, or training step are required
-at runtime. Original supplied images are retained as offline test fixtures.
+Four original screenshot variants are retained alongside a native CSS-sized
+reference for the scale-aware renderer. No external asset files, network,
+or training step are required at runtime.
 """
 from __future__ import annotations
 
@@ -67,4 +68,8 @@ def load_builtin_templates() -> list[tuple[int, Image.Image]]:
     for index, encoded in enumerate(_TEMPLATE_PNGS, 1):
         with Image.open(BytesIO(base64.b64decode(encoded))) as image:
             result.append((index, image.convert("RGB")))
+    from chest_artwork import render_ready_interior
+    native = render_ready_interior().copy()
+    native.info["wuwatappo_native"] = True
+    result.append((5, native))
     return result

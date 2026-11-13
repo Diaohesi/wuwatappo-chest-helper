@@ -50,6 +50,7 @@ jobs:
           report = json.loads(result.read_text(encoding='utf-8'))
           assert report.get('ok') is True, report
           assert report.get('frozen') is True, report
+          assert report.get('template_variants') == 5 and report.get('detected_chests') == 5, report
           assert report.get('default_mode') == 'borderless', report
           assert set(report.get('modes', [])) == {'borderless', 'background', 'visible'}, report
           assert all(report.get('mode_descriptions', {}).get(mode) for mode in report['modes']), report
@@ -92,6 +93,7 @@ jobs:
           assert report.get('input_sent') is False, report
           assert report.get('screenshots_saved') is False, report
           assert report.get('reason'), report
+          assert {item['variant'] for item in report.get('templates', [])} == {1, 2, 3, 4, 5}, report
           print(report)
       - name: Save build artifacts
         uses: actions/upload-artifact@v4

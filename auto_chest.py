@@ -41,7 +41,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.9.0"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -131,6 +131,7 @@ class Watcher:
         self.waiting_for_screen = False
         self.mode = "visible"
         self.background_capture = None
+        self.layout_changed_windows = set()
 
     def post(self, kind, text):
         self.events.put((kind, text))
@@ -147,6 +148,16 @@ class Watcher:
             self.gate = DetectionGate()
             self.ledger = ClickLedger()
             self.pending.clear()
+            self.layout_changed_windows.clear()
+        elif self.layout_changed_windows:
+            # Only an explicit manual continue acknowledges an uncertain
+            # layout. Automatic observations never remove its click budget
+            # or turn these unresolved inputs into successful claims.
+            changed = self.layout_changed_windows
+            self.pending[:] = [claim for claim in self.pending if claim.lock.window_key not in changed]
+            self.ledger.locks[:] = [lock for lock in self.ledger.locks if lock.window_key not in changed]
+            self.layout_changed_windows = set()
+            self.post("log", "已按用户继续重新观察调整后的布局，未确认的领取不计成功。")
         self.mode = mode
         self.templates = templates
         self.threshold, self.interval = threshold, interval
@@ -181,6 +192,54 @@ class Watcher:
     def pending_at(self, window_key, box):
         return next((claim for claim in self.pending
                      if claim.lock.window_key == window_key and same_button_box(claim.lock.box, box)), None)
+
+    def map_claim_matches(self, window_key, detections):
+        """Associate visible artwork with existing slots, across icon sizes.
+
+        A whole-window search is essential: a larger icon need not fit the
+        small verification patch around the old click box. Each candidate
+        can explain at most one existing lock.
+        """
+        possible = []
+        for lock in self.ledger.locks:
+            if lock.window_key != window_key:
+                continue
+            x, y, width, height = lock.box
+            centre = x+width//2, y+height//2
+            for index, (_, match) in enumerate(detections):
+                distance = max(abs(match.center[0]-centre[0]), abs(match.center[1]-centre[1]))
+                similar_size = all(abs(new-old) <= max(3., old*.12)
+                                   for old, new in ((width, match.width), (height, match.height)))
+                if distance <= 6 or (similar_size and same_button_box(
+                        lock.box, (match.x, match.y, match.width, match.height))):
+                    possible.append((distance, -match.score, lock, index))
+        mapped, used = {}, set()
+        for _, _, lock, index in sorted(possible, key=lambda item: item[:2]):
+            if lock not in mapped and index not in used:
+                mapped[lock] = detections[index]
+                used.add(index)
+        return mapped
+
+    def guard_changed_layout(self, window_key, ready_matches, mapped):
+        """Pause unresolved moved/resized slots without silently rearming them."""
+        unresolved = [claim for claim in self.pending
+                      if claim.lock.window_key == window_key and claim.lock not in mapped]
+        mapped_ids = {id(match) for _, match in mapped.values()}
+        for claim in unresolved:
+            width, height = claim.lock.box[2:]
+            for _, match in ready_matches:
+                if id(match) in mapped_ids:
+                    continue
+                if any(abs(new-old) > max(3., old*.12)
+                       for old, new in ((width, match.width), (height, match.height))):
+                    self.layout_changed_windows.add(window_key)
+                    self.pause()
+                    self.gate.reset_observations()
+                    self.unknown_claims()
+                    self.close_background_capture()
+                    self.post("error", "桌宠大小或布局已变化，已暂停；确认后按 F8 重新观察，未确认的领取不计成功。")
+                    return True
+        return False
 
     def unknown_claims(self):
         for claim in self.pending:
@@ -294,6 +353,24 @@ class Watcher:
             return
         crops, matches = {}, {}
         windows_by_key = {(w.hwnd, w.pid): w for w in windows}
+        claim_matches = {}
+        for window in windows:
+            if window.rect not in crops:
+                crops[window.rect] = crop_window(image, origin, window)
+            crop = crops[window.rect]
+            if window.rect not in matches:
+                matches[window.rect] = detect_templates(crop, self.templates, self.threshold) if crop is not None else []
+            captured = [(index, match) for index, match in matches[window.rect]
+                        if match_is_captured(match, window, origin, image)]
+            window_key = window.hwnd, window.pid
+            mapped = self.map_claim_matches(window_key, captured)
+            claim_matches[window_key] = mapped
+            if desktop.window_is_current(window) and any(claim.lock.window_key == window_key for claim in self.pending):
+                ready = [(index, match) for index, match in captured
+                         if desktop.point_hits_window(window.rect[0]+match.center[0],
+                                                      window.rect[1]+match.center[1], window)]
+                if self.guard_changed_layout(window_key, ready, mapped):
+                    return
         now = time.monotonic()
         # Check each clicked location itself. A different best match or an
         # occluding window must never count as evidence this icon disappeared.
@@ -303,32 +380,28 @@ class Watcher:
                 # A hidden/minimized window is unknown, not a successful claim.
                 self.observe_claim(lock, None, now)
                 continue
-            if window.rect not in crops:
-                crops[window.rect] = crop_window(image, origin, window)
             crop = crops[window.rect]
-            x, y, width, height = lock.box
-            visible = desktop.point_hits_window(window.rect[0]+x+width//2, window.rect[1]+y+height//2, window)
             if crop is None or not desktop.window_is_current(window):
                 self.observe_claim(lock, None, now)
                 continue
-            # Either built-in visual variant can prove that this icon remains.
-            # The template number is not the identity of a timer/button.
-            left, top = max(0, x-4), max(0, y-4)
-            patch = crop.crop((left, top, min(crop.width, x+width+4), min(crop.height, y+height+4)))
-            checks = detect_templates(patch, self.templates, self.threshold)
-            present = any(max(abs(m.center[0]+left-x-width//2),
-                              abs(m.center[1]+top-y-height//2)) <= 6 for _, m in checks)
             claim = next((p for p in self.pending if p.lock is lock), None)
-            if present:
+            present = claim_matches.get(lock.window_key, {}).get(lock)
+            if present is not None:
+                _, match = present
+                visible = desktop.point_hits_window(window.rect[0]+match.center[0], window.rect[1]+match.center[1], window)
                 # Only exact input ownership can establish a still-ready icon
                 # or allow a retry. Re-anchor after a move only when seen again.
-                if visible and claim is not None:
-                    claim.window_rect = window.rect
+                if visible:
+                    lock.box = (match.x, match.y, match.width, match.height)
+                    if claim is not None:
+                        claim.window_rect = window.rect
                 self.observe_claim(lock, True if visible else None, now)
             else:
                 # Removing a layered icon may expose an underlying window to
                 # hit testing. That is valid absence evidence, unlike a window
                 # above the pet covering this location or a moved pet window.
+                x, y, width, height = lock.box
+                left, top = max(0, x-4), max(0, y-4)
                 region = (window.rect[0]+left, window.rect[1]+top,
                           window.rect[0]+min(crop.width, x+width+4),
                           window.rect[1]+min(crop.height, y+height+4))
@@ -341,11 +414,6 @@ class Watcher:
 
         seen, ready_targets = set(), []
         for window in windows:
-            if window.rect not in crops:
-                crops[window.rect] = crop_window(image, origin, window)
-            crop = crops[window.rect]
-            if window.rect not in matches:
-                matches[window.rect] = detect_templates(crop, self.templates, self.threshold) if crop is not None else []
             for index, match in matches[window.rect]:
                 if self.stop_event.is_set() or not self.active.is_set():
                     return
@@ -438,6 +506,7 @@ class Watcher:
                 claim.attempts += 1
                 claim.last_attempt = claim.visible_since = sent_at
                 claim.window_rect = window.rect
+                claim.lock.box = (verify.x, verify.y, verify.width, verify.height)
                 claim.lock.missing_frames = 0
                 self.clicks += 1
                 self.post("count", str(self.clicks))
@@ -504,6 +573,14 @@ class Watcher:
                 self.close_background_capture()
                 self.post("status", "后台画面暂不可用，等待重连；当前保持后台模式。")
                 return
+        matches = {window_key: detect_templates(frame.image, self.templates, self.threshold)
+                   for window_key, frame in frames.items()}
+        claim_matches = {}
+        for window_key, detections in matches.items():
+            mapped = self.map_claim_matches(window_key, detections)
+            claim_matches[window_key] = mapped
+            if self.guard_changed_layout(window_key, detections, mapped):
+                return
         now = time.monotonic()
         for lock in list(self.ledger.locks):
             frame = frames.get(lock.window_key)
@@ -512,22 +589,20 @@ class Watcher:
                 self.observe_claim(lock, None, now)
                 continue
             crop = frame.image
-            x, y, width, height = lock.box
-            if not (0 <= x < x+width <= crop.width and 0 <= y < y+height <= crop.height):
-                self.observe_claim(lock, None, now)
-                continue
-            left, top = max(0, x-4), max(0, y-4)
-            patch = crop.crop((left, top, min(crop.width, x+width+4), min(crop.height, y+height+4)))
-            present = any(max(abs(m.center[0]+left-x-width//2),
-                              abs(m.center[1]+top-y-height//2)) <= 6
-                          for _, m in detect_templates(patch, self.templates, self.threshold))
+            present = claim_matches.get(lock.window_key, {}).get(lock)
             signature = self.background_signature(frame)
-            if present:
+            if present is not None:
+                _, match = present
+                lock.box = (match.x, match.y, match.width, match.height)
                 if claim is not None:
                     claim.window_rect = frame.input.rect
                     claim.render_signature = signature
                 self.observe_claim(lock, True, now)
             else:
+                x, y, width, height = lock.box
+                if not (0 <= x < x+width <= crop.width and 0 <= y < y+height <= crop.height):
+                    self.observe_claim(lock, None, now)
+                    continue
                 # Identical/cached frames, a new window origin, or a different
                 # capture source cannot advance a disappearance streak.
                 known = (claim is not None and signature == claim.render_signature
@@ -537,7 +612,7 @@ class Watcher:
             return
         seen, ready_targets = set(), []
         for window_key, frame in frames.items():
-            for index, match in detect_templates(frame.image, self.templates, self.threshold):
+            for index, match in matches[window_key]:
                 if cancelled():
                     return
                 position = match.center
@@ -610,6 +685,7 @@ class Watcher:
             claim.attempts += 1
             claim.last_attempt = claim.visible_since = sent_at
             claim.window_rect = fresh.input.rect
+            claim.lock.box = (verify.x, verify.y, verify.width, verify.height)
             claim.frame_digest = fresh.digest
             claim.render_signature = signature
             claim.lock.missing_frames = 0

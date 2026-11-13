@@ -5,6 +5,7 @@ Template indexes identify visual variants, not the identity of a chest or its
 """
 from __future__ import annotations
 
+import math
 from PIL import Image
 
 from chest_assets import load_builtin_templates
@@ -26,12 +27,18 @@ def detect_templates(
 
     Templates contain only the icon's opaque interior, so pet pixels and
     desktop background are outside the comparison region. Image preparation
-    is shared between variants. Most desktop colours are
-    rejected before FFT work; every remaining match keeps the original score.
+    is shared between variants. Built-in artwork uses colour proposals and
+    local native-size/phase searches; every match retains the RGB score.
     """
-    searches = find_matches_many(image, [template for _, template in templates], threshold=threshold)
-    candidates = [(index, match) for (index, _), matches in zip(templates, searches)
-                  for match in matches]
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("Threshold must be finite and between zero and one")
+    if any(index == 5 and template.info.get("wuwatappo_native") for index, template in templates):
+        from chest_scaling import detect_scaled
+        candidates = detect_scaled(image, templates, threshold)
+    else:
+        searches = find_matches_many(image, [template for _, template in templates], threshold=threshold)
+        candidates = [(index, match) for (index, _), matches in zip(templates, searches)
+                      for match in matches]
     found: list[tuple[int, Match]] = []
     for candidate in sorted(candidates, key=lambda item: item[1].score, reverse=True):
         if not any(_same_target(candidate[1], previous[1]) for previous in found):

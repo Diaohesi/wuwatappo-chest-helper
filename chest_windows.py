@@ -373,7 +373,7 @@ def capture_desktop() -> tuple[Image.Image, tuple[int, int]]:
     left, top, right, bottom = virtual_rect()
     image = ImageGrab.grab(all_screens=True, include_layered_windows=True).convert("RGB")
     if image.size != (right - left, bottom - top):
-        raise RuntimeError("Display geometry changed; retry the screen capture.")
+        raise CaptureUnavailable("Display geometry changed; retry the screen capture.")
     if all(low == high for low, high in image.getextrema()):
         raise CaptureUnavailable("当前截图只有纯色背景，暂时无法读取桌面画面。")
     return image, (left, top)

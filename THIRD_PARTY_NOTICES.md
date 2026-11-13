@@ -6,6 +6,13 @@ application. Their licenses do not change the license of this project's own
 source. Original copyright and license texts are preserved in `licenses/` and,
 where supplied by the packaging hooks, `_internal/`.
 
+## WuwaTappo UI artwork (helper 1.9.0)
+
+The three PNG images embedded in `chest_artwork.py` (reward bubble, chest base
+and chest lid) come from the WuwaTappo 1.0.4 UI. No WuwaTappo program source
+code is included. Rights to these UI images remain with their original authors;
+the images are not covered by this project's MIT license.
+
 ## MaaFramework 5.16.0
 
 Background window capture uses the unmodified Python bindings and dynamically

@@ -122,6 +122,7 @@ class _PreparedImage:
         self._integrals = None
         self._image_ffts = None
         self._squared_integral = None
+        self.sparse_pixel_budget = None
 
     @property
     def integrals(self):
@@ -175,7 +176,9 @@ def _sparse_candidates(prepared, target, centered, means, template_energy,
     limit = -6.0 * 45.0**2 * math.log(threshold)
     possible = bound <= limit + 1e-8
     candidate_count = int(np.count_nonzero(possible))
-    if candidate_count > _SPARSE_MAX_CANDIDATES:
+    if (candidate_count > _SPARSE_MAX_CANDIDATES
+            or (prepared.sparse_pixel_budget is not None
+                and candidate_count*count > prepared.sparse_pixel_budget)):
         return None
     ys, xs = np.nonzero(possible)
     del bound, possible
@@ -365,15 +368,24 @@ def find_matches_many(
     templates: list[Image.Image],
     threshold: float = .94,
     max_results: int = 8,
+    *,
+    sparse_pixel_budget: int | None = None,
 ) -> list[list[Match]]:
-    """Search several fixed-size templates while preparing the image once."""
+    """Search fixed-size templates, sharing preparation and optional ROI budget.
+
+    The default preserves sparse matching for small legacy templates. A local
+    native-artwork search may request an earlier FFT switch for large patches.
+    """
     if not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError("Threshold must be finite and between zero and one")
     if not isinstance(max_results, int) or max_results <= 0:
         raise ValueError("max_results must be a positive integer")
+    if sparse_pixel_budget is not None and (not isinstance(sparse_pixel_budget, int) or sparse_pixel_budget <= 0):
+        raise ValueError("sparse_pixel_budget must be a positive integer or None")
     if not templates:
         return []
     prepared = _PreparedImage(image)
+    prepared.sparse_pixel_budget = sparse_pixel_budget
     return [_find_candidates(image, template, threshold=threshold,
                              max_results=max_results, _prepared=prepared)
             for template in templates]

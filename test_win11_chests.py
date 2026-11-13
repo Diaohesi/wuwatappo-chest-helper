@@ -33,7 +33,7 @@ def erase_glyphs(image, upper=False, lower=False):
 class Win11ChestDetectionTests(unittest.TestCase):
     def test_original_win11_pixels_detect_both_chests_once_at_user_threshold(self):
         templates = dict(load_builtin_templates())
-        self.assertEqual(set(templates), {1, 2, 3, 4})
+        self.assertEqual(set(templates), {1, 2, 3, 4, 5})
         self.assertEqual(templates[3].size, (19, 15))
         self.assertEqual(templates[4].size, (20, 15))
         found = detect_chests(load_fixture("win11_chests.png"), .96)
