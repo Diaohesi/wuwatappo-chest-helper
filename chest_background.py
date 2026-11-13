@@ -371,13 +371,16 @@ def _wait_input(seconds, window, should_cancel):
 
 
 def background_click(x: int, y: int, input_window: desktop.WindowInfo,
-                     should_cancel: Callable[[], bool] | None = None) -> bool:
+                     should_cancel: Callable[[], bool] | None = None,
+                     before_press: Callable[[], bool] | None = None) -> bool:
     """Send one tested native-overlay click without using physical input.
 
     Coordinates are physical SCREEN pixels. A held button is released even
     after a timed-out DOWN (whose delivery is unknown), cancellation or lock.
     Cleanup only addresses the original HWND/PID and never restores a cursor
-    or changes the foreground window.
+    or changes the foreground window. ``before_press`` runs once after hover,
+    before DOWN; it can reject a newly covered target without treating the
+    target's disappearance after a successful DOWN as cancellation.
     """
     desktop._require_windows()
     window = input_window
@@ -403,6 +406,11 @@ def background_click(x: int, y: int, input_window: desktop.WindowInfo,
             _send_message(window, 0x0006, 1)  # Synthetic WA_ACTIVE, never foreground activation.
         _send_message(window, 0x0200, 0, lparam)
         if not _wait_input(.10, window, should_cancel):
+            return False
+        if before_press is not None and not before_press():
+            return False
+        # The final observation may take time; pause/lock still cancels input.
+        if not _wait_input(0., window, should_cancel):
             return False
         attempted_down = True
         _send_message(window, 0x0201, 1, lparam)

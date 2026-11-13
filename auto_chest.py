@@ -33,9 +33,15 @@ if getattr(sys, "frozen", False):
         BASE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WuwaTappoChestHelper"
         BASE.mkdir(parents=True, exist_ok=True)
 CONFIG = BASE / "config.json"
-DEFAULTS = {"threshold": 0.94, "interval": 2.0, "mode": "background"}
-MODE_NAMES = {"background": "后台领取（不占鼠标）", "visible": "可见点击（兼容模式）"}
-APP_VERSION = "1.7"
+DEFAULTS = {"threshold": 0.94, "interval": 2.0, "mode": "borderless"}
+MODE_NAMES = {"borderless": "无黄框领取（不占鼠标）", "background": "遮挡后台（可能有黄框）",
+              "visible": "可见点击（兼容模式）"}
+MODE_DESCRIPTIONS = {
+    "borderless": "无捕获黄框，不移动鼠标、不抢焦点；宝箱须在桌面可见，完全被遮挡时等待。",
+    "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
+    "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
+}
+APP_VERSION = "1.8"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -66,9 +72,12 @@ def same_button_box(a, b):
 def read_config():
     try:
         data = json.loads(CONFIG.read_text(encoding="utf-8"))
+        mode = data.get("mode")
+        if mode not in MODE_NAMES or (mode == "background" and data.get("settings_version") != 2):
+            mode = "borderless"
         return {"threshold": max(.90, min(.99, float(data.get("threshold", .94)))),
                 "interval": max(1., min(30., float(data.get("interval", 2.)))),
-                "mode": data.get("mode") if data.get("mode") in MODE_NAMES else "background"}
+                "mode": mode}
     except (OSError, ValueError, TypeError):
         return DEFAULTS.copy()
 
@@ -249,6 +258,16 @@ class Watcher:
             self.active.clear()
             self.post("privilege", problem)
             return
+        if self.mode == "borderless":
+            # Desktop pixels avoid WGC's system capture border. Direct input
+            # still goes only to the verified native layer of the same pet.
+            windows = [input_window for _, input_window in bg.find_background_pairs(windows)]
+            if not windows:
+                self.waiting_for_screen = True
+                self.gate.reset_observations()
+                self.unknown_claims()
+                self.post("status", "等待桌宠的输入窗口；无黄框模式需要宝箱在桌面可见。")
+                return
         try:
             image, origin = desktop.capture_desktop()
         except desktop.CaptureUnavailable:
@@ -339,7 +358,7 @@ class Watcher:
             self.gate.observe(key, None, time.monotonic())
         self.empty_rounds = 0 if seen else self.empty_rounds+1
         if ready_targets:
-            if desktop.user_idle_seconds() < 1.5:
+            if self.mode == "visible" and desktop.user_idle_seconds() < 1.5:
                 self.post("status", "宝箱已识别，等鼠标和键盘空闲 1.5 秒后点击……")
                 return
             # New ready buttons remain independent while an earlier one awaits
@@ -372,10 +391,20 @@ class Watcher:
                 return
             index, verify = max(checks, key=lambda item: item[1].score)
             if (not self.active.is_set() or self.stop_event.is_set()
-                    or desktop.user_idle_seconds() < 1.5):
+                    or (self.mode == "visible" and desktop.user_idle_seconds() < 1.5)):
                 return
             x, y = window.rect[0]+verify.center[0], window.rect[1]+verify.center[1]
-            if desktop.safe_click(x, y, window, should_cancel=lambda: self.stop_event.is_set() or not self.active.is_set()):
+            if self.mode == "borderless":
+                def cancelled():
+                    return (self.stop_event.is_set() or not self.active.is_set()
+                            or not desktop.is_desktop_available()
+                            or not desktop.window_is_current(window))
+                visible = lambda: desktop.point_hits_window(x, y, window)
+                clicked = False if cancelled() or not visible() else bg.background_click(
+                    x, y, window, should_cancel=cancelled, before_press=visible)
+            else:
+                clicked = desktop.safe_click(x, y, window, should_cancel=lambda: self.stop_event.is_set() or not self.active.is_set())
+            if clicked:
                 sent_at = time.monotonic()
                 self.gate.clicked(key, verify.center, sent_at)
                 if claim is None:
@@ -578,8 +607,8 @@ class App:
         self.tk, self.ttk = tk, ttk
         self.root = tk.Tk()
         self.root.title(f"WuwaTappo 宝箱自动领取 {APP_VERSION}")
-        self.root.geometry("1080x840")
-        self.root.minsize(980, 800)
+        self.root.geometry("1080x880")
+        self.root.minsize(980, 860)
         self.root.configure(background="#f3f2f4")
         self.background_source = load_background()
         self.background_job = None
@@ -594,6 +623,7 @@ class App:
         self.threshold = tk.StringVar(value=str(self.settings["threshold"]))
         self.interval = tk.StringVar(value=str(self.settings["interval"]))
         self.mode = tk.StringVar(value=MODE_NAMES[self.settings["mode"]])
+        self.mode_help = tk.StringVar(value=MODE_DESCRIPTIONS[self.settings["mode"]])
         self.status = tk.StringVar(value="宝箱识别已内置，点击“开始领取”即可。")
         self.count = tk.StringVar(value="已发出点击：0；确认图案消失：0")
 
@@ -619,7 +649,7 @@ class App:
         ttk.Label(frame, text="图案已内置；无宝箱时自动降低检查频率。", style="Chest.TLabel", wraplength=350).pack(anchor="w", pady=(0, 10))
         steps = ("① 点击“开始领取”，等待金色宝箱出现。\n"
                  "② 点击后图案消失，两个宝箱各自刷新、各自领取。\n"
-                 "③ 后台模式支持遮挡；保持解锁，F8 暂停，F12 退出。")
+                 "③ 按需选择运行模式；保持解锁，F8 暂停，F12 退出。")
         ttk.Label(frame, text=steps, style="Chest.TLabel", justify="left", wraplength=350).pack(anchor="w", pady=(0, 12))
         self.admin_row = ttk.Frame(frame, style="Chest.TFrame")
         self.admin_row.pack(fill="x", pady=(0, 4))
@@ -637,6 +667,9 @@ class App:
         self.mode_choice = ttk.Combobox(mode_row, textvariable=self.mode, values=list(MODE_NAMES.values()),
                                        state="readonly", width=23)
         self.mode_choice.pack(side="right")
+        self.mode.trace_add("write", self.update_mode_help)
+        ttk.Label(frame, textvariable=self.mode_help, style="Chest.TLabel", wraplength=350,
+                  foreground="#5f425c", justify="left").pack(anchor="w", pady=(4, 6))
         buttons = ttk.Frame(frame, style="Chest.TFrame")
         buttons.pack(fill="x", pady=(10, 4))
         self.start_button = ttk.Button(buttons, text="开始领取  /  F8", style="Primary.Chest.TButton", command=self.toggle)
@@ -693,6 +726,10 @@ class App:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def update_mode_help(self, *_):
+        mode = next((key for key, label in MODE_NAMES.items() if label == self.mode.get()), None)
+        self.mode_help.set(MODE_DESCRIPTIONS.get(mode, "请选择运行模式。"))
+
     def get_settings(self):
         threshold, interval = float(self.threshold.get()), float(self.interval.get())
         if not .90 <= threshold <= .99 or not 1 <= interval <= 30:
@@ -700,7 +737,8 @@ class App:
         mode = next((key for key, label in MODE_NAMES.items() if label == self.mode.get()), None)
         if mode is None:
             raise ValueError("请选择有效的运行模式。")
-        CONFIG.write_text(json.dumps({"threshold": threshold, "interval": interval, "mode": mode}, indent=2), encoding="utf-8")
+        CONFIG.write_text(json.dumps({"threshold": threshold, "interval": interval, "mode": mode,
+                                      "settings_version": 2}, indent=2), encoding="utf-8")
         return threshold, interval, mode
 
     def toggle(self):
@@ -749,8 +787,9 @@ class App:
             return
         self.starting = False
         self.watcher.start(templates, threshold, interval, mode)
-        self.append_log("已开始后台领取：窗口取图和定向消息，不占用鼠标。" if mode == "background"
-                        else "已开始可见点击：连续两帧命中、点击前复核，鼠标键盘空闲后点击。")
+        self.append_log({"borderless": "已开始无黄框领取：宝箱可见时定向点击，不占鼠标；完全遮挡时等待。",
+                         "background": "已开始遮挡后台：窗口取图和定向消息，不占鼠标；系统可能显示黄色捕获框。",
+                         "visible": "已开始可见点击：连续两帧命中、点击前复核，鼠标键盘空闲后点击。"}[mode])
         self.start_button.configure(text="暂停领取  /  F8")
         self.status.set("正在等待宝箱出现……")
 
@@ -912,7 +951,8 @@ def runtime_self_test(destination):
             raise RuntimeError("Embedded background has unexpected dimensions")
         root.update_idletasks()
         report.update(ok=True, background=list(background.size), detected_chests=len(detections),
-                      tk=str(root.tk.call("info", "patchlevel")))
+                      tk=str(root.tk.call("info", "patchlevel")), default_mode=DEFAULTS["mode"],
+                      modes=list(MODE_NAMES), mode_descriptions=MODE_DESCRIPTIONS)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:

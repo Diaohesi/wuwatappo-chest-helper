@@ -137,6 +137,39 @@ class BackgroundInputTests(NativeFixture):
         self.assertFalse(self.click())
         self.assertNotIn(0x0201, self.codes())
 
+    def test_final_visibility_check_after_hover_can_reject_without_button_input(self):
+        def reject_covered_target():
+            self.assertIn(0x0200, self.codes())
+            self.assertGreaterEqual(self.now, 100.10)
+            self.assertNotIn(0x0201, self.codes())
+            return False
+        before_press = MagicMock(side_effect=reject_covered_target)
+        self.assertFalse(bg.background_click(120, 80, self.input,
+            lambda: self.cancelled, before_press=before_press))
+        before_press.assert_called_once_with()
+        self.assertNotIn(0x0201, self.codes())
+        self.assertNotIn(0x0202, self.codes())
+
+    def test_target_disappearing_after_down_does_not_repeat_final_visibility_check(self):
+        self.chest_visible = True
+        before_press = MagicMock(side_effect=lambda: self.chest_visible)
+        self.send_hook = lambda code: (setattr(self, "chest_visible", False) or True) if code == 0x0201 else True
+        self.assertTrue(bg.background_click(120, 80, self.input,
+            lambda: self.cancelled, before_press=before_press))
+        self.assertFalse(self.chest_visible)
+        before_press.assert_called_once_with()
+        self.assertEqual(self.codes().count(0x0201), 1)
+        self.assertEqual(self.codes().count(0x0202), 1)
+
+    def test_pause_during_final_visibility_check_still_prevents_down(self):
+        def pause_during_observation():
+            self.cancelled = True
+            return True
+        self.assertFalse(bg.background_click(120, 80, self.input,
+            lambda: self.cancelled, before_press=pause_during_observation))
+        self.assertNotIn(0x0201, self.codes())
+        self.assertNotIn(0x0202, self.codes())
+
     def test_cancel_and_lock_after_down_still_send_release(self):
         for field in ("cancelled", "available"):
             self.messages.clear()
