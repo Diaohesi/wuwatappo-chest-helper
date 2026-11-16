@@ -42,7 +42,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -778,6 +778,8 @@ class App:
         secondary = ttk.Frame(frame, style="Chest.TFrame")
         secondary.pack(fill="x", pady=(4, 8))
         ttk.Button(secondary, text="仅识别一次", style="Chest.TButton", command=self.preview).pack(side="left", fill="x", expand=True)
+        self.minimize_button = ttk.Button(secondary, text="最小化", width=7, style="Chest.TButton", command=self.root.iconify)
+        self.minimize_button.pack(side="left", padx=(8, 0))
         ttk.Button(secondary, text="退出  /  F12", style="Chest.TButton", command=self.close).pack(side="left", padx=(8, 0))
         self.clicker_button = ttk.Button(frame, text="打开内置连点器", style="Chest.TButton", command=self.toggle_clicker)
         self.clicker_button.pack(fill="x", pady=(2, 2))

@@ -7,13 +7,19 @@
 在本仓库的 [Releases](../../releases) 下载 Windows ZIP。支持 Windows 10 1903+/Windows 11 x64，无需安装 Python。将 ZIP **完整解压**到固定文件夹，再运行其中的 `WuwaTappoChestHelper.exe`，保留它旁边的整个 `_internal` 文件夹。
 
 1. 默认选择 **无黄框领取（不占鼠标）**。保持宝箱在桌面可见，点击 **开始领取**，或按 **F8**；需要其他方式时可在下拉框切换。
-2. 保持 WuwaTappo 运行、桌面解锁。助手可以最小化；桌宠本身不要最小化或隐藏。
+2. 保持 WuwaTappo 运行、桌面解锁。可点击 **最小化** 将助手收起到任务栏；桌宠本身不要最小化或隐藏。
 3. 两个宝箱分别识别和领取；点击后确认图案消失，再等待各自刷新。无需显示倒计时文字。
 4. **F8** 暂停/继续，**F12** 退出。打开程序时保持暂停。
 
 如果桌宠以管理员权限运行，请点击 **以管理员身份重新启动**，并亲自确认 Windows UAC。也可右键 EXE 选择“以管理员身份运行”。
 
 程序采用文件夹打包，启动时不创建临时解包目录，保留了 1.5 版对“Could not create temporary directory”的修复。不能只复制 EXE，也不要直接在 ZIP 中运行。
+
+## 最小化到任务栏（1.10.1）
+
+点击 **最小化**，将助手主窗口收起到任务栏，已运行的宝箱领取或连点器继续运行，当前暂停状态也会保留。点击 Windows 任务栏中的程序图标即可恢复窗口。
+
+关闭窗口或点击 **退出** 仍会退出助手、停止宝箱领取，并关闭从助手打开的连点器。需要保持运行时，请使用最小化按钮。
 
 ## 内置连点器（1.10.0）
 
@@ -127,7 +133,7 @@ python build_windows.py --clean
 
 - `WuwaTappoChestHelper.exe`：图形程序入口，与旁边的 `_internal` 一起使用。
 - `_internal/`：内置 Python、界面库、背景图、宝箱图案、后台截图组件与 `bundled_tools/MouseClickTool.exe`，必须完整保留。
-- `WuwaTappoChestHelper-v1.10.0-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
+- `WuwaTappoChestHelper-v1.10.1-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
 - `SHA256SUMS.txt`：EXE、运行依赖、说明、许可与 ZIP 的 SHA256 校验。
 - `THIRD_PARTY_NOTICES.md` / `licenses/`：第三方组件的来源和许可文本。
 
