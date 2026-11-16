@@ -15,6 +15,16 @@
 
 程序采用文件夹打包，启动时不创建临时解包目录，保留了 1.5 版对“Could not create temporary directory”的修复。不能只复制 EXE，也不要直接在 ZIP 中运行。
 
+## 内置连点器（1.10.0）
+
+点击 **打开内置连点器**，即可打开随程序提供的 **MouseClickTool 3.3** 原版窗口，无需另行下载。程序启动时仍保持暂停，不会自动打开连点器；请在连点器窗口自行设置并点击开始。
+
+打开连点器前，助手会暂停宝箱领取，并等待正在处理的领取操作结束。连点器打开期间，宝箱领取保持暂停，助手的 **F8 / F12** 暂不响应，避免与连点器热键冲突。可点击助手的 **关闭内置连点器**，也可直接关闭连点器窗口；关闭后助手快捷键恢复，宝箱领取仍需点击 **继续领取** 或按 **F8** 手动恢复。
+
+退出助手会同时关闭本次从助手打开的连点器，不会关闭你独立手动打开的其他实例。连点器需要 **.NET Framework 4.6.2 或更高版本**，Windows 10 / 11 通常已自带；如果未出现窗口，请检查此组件。原始 EXE 随源码和正式包一起提供，启动前检查文件完整性；三种宝箱领取方式保持原有行为。
+
+连点器继续使用其原有设置文件：Windows“文档”目录中的 `MouseClickTool_V3.3.ini`。因此如果之前用过原版连点器，已有热键和点击参数会沿用；以连点器窗口显示的设置为准。
+
 ## 自动适配大小与显示器（1.9.0）
 
 支持桌宠 **50%～200% 的连续整数比例设置**，无需为每个比例截图。程序内置 WuwaTappo 1.0.4 的原始气泡、箱体和箱盖三张 PNG，按实际图像中的按钮大小进行多尺度识别；同时保留原有四套截图模板，三种领取方式共用这些图案。默认阈值仍为 **0.94**，已保存的用户阈值（例如 **0.96**）继续保留。
@@ -104,7 +114,7 @@ python auto_chest.py --scan-once
 python auto_chest.py --diagnose build/source-diagnostic.json
 ```
 
-`--check` 只检查运行环境和桌宠窗口；`--scan-once` 识别一次，不发送点击。`--diagnose JSON` 生成分阶段诊断报告，默认读取配置中的模式，可用 `--mode` 覆盖。`--background-self-test` 检查截图组件及独立进程启动，不发送输入。测试图像内置于 `fixture_assets.py`，不需要额外下载。
+`--check` 只检查运行环境和桌宠窗口；`--scan-once` 识别一次，不发送点击。`--diagnose JSON` 生成分阶段诊断报告，默认读取配置中的模式，可用 `--mode` 覆盖。`--background-self-test` 检查截图组件及独立进程启动，不发送输入。`--self-test` 同时检查内置连点器的固定 SHA256，不启动连点器。测试图像内置于 `fixture_assets.py`，不需要额外下载。
 
 ## 构建 Windows EXE
 
@@ -116,8 +126,8 @@ python build_windows.py --clean
 生成文件位于 `dist/`：
 
 - `WuwaTappoChestHelper.exe`：图形程序入口，与旁边的 `_internal` 一起使用。
-- `_internal/`：内置 Python、界面库、背景图、宝箱图案与后台截图组件，必须完整保留。
-- `WuwaTappoChestHelper-v1.9.0-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
+- `_internal/`：内置 Python、界面库、背景图、宝箱图案、后台截图组件与 `bundled_tools/MouseClickTool.exe`，必须完整保留。
+- `WuwaTappoChestHelper-v1.10.0-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
 - `SHA256SUMS.txt`：EXE、运行依赖、说明、许可与 ZIP 的 SHA256 校验。
 - `THIRD_PARTY_NOTICES.md` / `licenses/`：第三方组件的来源和许可文本。
 
@@ -134,6 +144,9 @@ GitHub Actions 在 `main` 更新后执行测试、构建和 EXE 自检，再发�
 - `chest_detection.py` / `chest_matcher.py`：多目标模板匹配。
 - `chest_windows.py`：Windows 截图、权限、窗口层级与鼠标输入。
 - `chest_state.py`：连续帧和防重复点击状态。
+- `chest_clicker.py`：内置连点器的完整性检查、启动与所启动实例的关闭。
+- `clicker_job.py`：管理连点器及其重启产生的子进程。
+- `bundled_tools/MouseClickTool.exe`：用户提供的 MouseClickTool 3.3 原始程序，源码运行和 EXE 运行共用。
 - `build_windows.py`：EXE、ZIP 和校验生成。
 
 ## 第三方组件
@@ -141,3 +154,5 @@ GitHub Actions 在 `main` 更新后执行测试、构建和 EXE 自检，再发�
 遮挡后台模式使用 [MaaFramework](https://github.com/MaaXYZ/MaaFramework) 5.16.0（LGPL-3.0），运行库以独立 DLL 形式随程序分发。项目自身代码保持 MIT 许可。第三方许可、源码地址和替换说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 `chest_artwork.py` 中三张 PNG 来自 WuwaTappo 1.0.4 的宝箱 UI，不包含该软件的程序源码；图像权利归原作者，不属于本项目的 MIT 授权范围。
+
+MouseClickTool 3.3 为用户提供的未修改原始程序，文件版权标记为 `Copyright (C) 2026 lalaki.cn`。其版权归原作者，本项目不将该程序重新授予 MIT 许可。

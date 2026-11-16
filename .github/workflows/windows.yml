@@ -50,6 +50,8 @@ jobs:
           report = json.loads(result.read_text(encoding='utf-8'))
           assert report.get('ok') is True, report
           assert report.get('frozen') is True, report
+          assert report.get('clicker', {}).get('verified') is True, report
+          assert report['clicker'].get('launched') is False, report
           assert report.get('template_variants') == 5 and report.get('detected_chests') == 5, report
           assert report.get('default_mode') == 'borderless', report
           assert set(report.get('modes', [])) == {'borderless', 'background', 'visible'}, report

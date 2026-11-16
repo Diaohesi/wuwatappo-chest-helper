@@ -6,6 +6,17 @@ application. Their licenses do not change the license of this project's own
 source. Original copyright and license texts are preserved in `licenses/` and,
 where supplied by the packaging hooks, `_internal/`.
 
+## MouseClickTool 3.3 (helper 1.10.0)
+
+`bundled_tools/MouseClickTool.exe` is the original, unmodified executable
+provided by the user. The Windows package carries the same file at
+`_internal/bundled_tools/MouseClickTool.exe`. Its file copyright is
+`Copyright (C) 2026 lalaki.cn`; rights remain with its original author.
+This executable is not relicensed under this project's MIT license.
+
+SHA256: `e4b07ea0a1cebc18e825c0ad3bc9bfdadbcb1b5b30e26cf05e00f5409da6bf60`.
+MouseClickTool requires .NET Framework 4.6.2 or later.
+
 ## WuwaTappo UI artwork (helper 1.9.0)
 
 The three PNG images embedded in `chest_artwork.py` (reward bubble, chest base

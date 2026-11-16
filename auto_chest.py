@@ -19,6 +19,7 @@ from chest_detection import detect_chests, detect_templates
 from chest_state import DetectionGate, ClickLedger, ClickLock
 import chest_windows as desktop
 import chest_background as bg
+from chest_clicker import ClickerProcess, verify_clicker
 from ui_assets import load_background
 
 SOURCE_BASE = Path(__file__).resolve().parent
@@ -41,7 +42,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_MAX_ATTEMPTS = 3
 
@@ -711,6 +712,9 @@ class App:
         self.background_photo = None
         self.events = queue.Queue()
         self.watcher = Watcher(self.events)
+        self.clicker = ClickerProcess()
+        self.clicker_opening = False
+        self.clicker_was_running = False
         self.key_states = {}
         self.previewing = False
         self.starting = False
@@ -775,9 +779,14 @@ class App:
         secondary.pack(fill="x", pady=(4, 8))
         ttk.Button(secondary, text="仅识别一次", style="Chest.TButton", command=self.preview).pack(side="left", fill="x", expand=True)
         ttk.Button(secondary, text="退出  /  F12", style="Chest.TButton", command=self.close).pack(side="left", padx=(8, 0))
+        self.clicker_button = ttk.Button(frame, text="打开内置连点器", style="Chest.TButton", command=self.toggle_clicker)
+        self.clicker_button.pack(fill="x", pady=(2, 2))
+        self.clicker_help = tk.StringVar(value="MouseClickTool 3.3：打开后在其窗口设置并开始；退出助手会同时关闭它。")
+        ttk.Label(frame, textvariable=self.clicker_help, style="Chest.TLabel", wraplength=350,
+                  foreground="#5f425c").pack(anchor="w", pady=(0, 4))
         ttk.Label(frame, textvariable=self.status, style="Chest.TLabel", wraplength=350, foreground="#5f425c").pack(anchor="w", pady=5)
         ttk.Label(frame, textvariable=self.count, style="Chest.TLabel", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=5)
-        self.log = tk.Text(frame, height=7, wrap="word", state="disabled", font=("Microsoft YaHei UI", 9),
+        self.log = tk.Text(frame, height=4, wrap="word", state="disabled", font=("Microsoft YaHei UI", 9),
                            background="#f2f0f4", foreground="#47414f", relief="flat", padx=10, pady=8)
         self.log.pack(fill="both", expand=True, pady=(8, 0))
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -839,7 +848,7 @@ class App:
 
     def toggle(self):
         from tkinter import messagebox
-        if self.previewing or self.starting:
+        if self.previewing or self.starting or self.clicker_opening or self.clicker.running:
             return
         if self.watcher.active.is_set():
             self.pause()
@@ -898,7 +907,7 @@ class App:
 
     def preview(self):
         from tkinter import messagebox
-        if self.previewing:
+        if self.previewing or self.clicker_opening or self.clicker.running:
             return
         self.pause()
         try:
@@ -925,10 +934,64 @@ class App:
 
         self.root.after(350, lambda: threading.Thread(target=worker, daemon=True).start())
 
+    def toggle_clicker(self):
+        from tkinter import messagebox
+        if self.closing or self.previewing or self.clicker_opening:
+            return
+        if self.clicker.running:
+            self.clicker.request_close()
+            self.clicker_button.configure(state="disabled", text="正在关闭连点器……")
+            return
+        try:
+            verify_clicker()
+        except RuntimeError as exc:
+            messagebox.showerror("无法打开连点器", str(exc), parent=self.root)
+            return
+        self.pause()
+        self.watcher.close()
+        self.clicker_opening = True
+        self.start_button.configure(state="disabled")
+        self.clicker_button.configure(state="disabled", text="正在打开连点器……")
+        self.status.set("已暂停宝箱领取，正在打开连点器……")
+        self.root.after(30, self.finish_open_clicker)
+
+    def finish_open_clicker(self):
+        from tkinter import messagebox
+        if self.closing or not self.clicker_opening:
+            return
+        # Finish releasing any pending chest input before starting a clicker.
+        if self.watcher.thread and self.watcher.thread.is_alive():
+            self.root.after(30, self.finish_open_clicker)
+            return
+        self.clicker_opening = False
+        try:
+            self.clicker.launch(BASE)
+        except (OSError, RuntimeError) as exc:
+            self.start_button.configure(state="normal")
+            self.clicker_button.configure(state="normal", text="打开内置连点器")
+            self.status.set("连点器启动失败；宝箱领取保持暂停。")
+            messagebox.showerror("无法打开连点器", str(exc), parent=self.root)
+            return
+        self.clicker_was_running = True
+        self.clicker_button.configure(state="normal", text="关闭内置连点器")
+        self.clicker_help.set("请在连点器窗口设置并开始。助手的 F8/F12 暂停响应；关闭连点器后可继续领取。")
+        self.status.set("连点器已打开，宝箱领取暂停。")
+        self.append_log("已打开 MouseClickTool 3.3，宝箱领取与助手快捷键已暂停。")
+
     def poll(self):
         from tkinter import messagebox
         if self.closing:
             return
+        clicker_running = self.clicker.poll()
+        if self.clicker_was_running and not clicker_running:
+            exit_code = self.clicker.process.returncode
+            self.clicker_was_running = False
+            self.clicker_button.configure(state="normal", text="打开内置连点器")
+            self.start_button.configure(state="normal")
+            self.clicker_help.set("MouseClickTool 3.3 已关闭；F8/F12 已恢复，可手动继续宝箱领取。")
+            self.status.set("连点器已关闭，宝箱领取保持暂停。" if exit_code == 0 else
+                            "连点器已退出。若未出现窗口，请检查 .NET Framework 4.6.2 或更高版本。")
+            self.append_log("连点器已退出；宝箱领取保持暂停。")
         try:
             while True:
                 kind, text = self.events.get_nowait()
@@ -953,7 +1016,7 @@ class App:
             pass
         for vk in (0x77, 0x7B):  # F8 / F12
             down = desktop.hotkey_down(vk)
-            if down and not self.key_states.get(vk, False):
+            if down and not self.key_states.get(vk, False) and not (clicker_running or self.clicker_opening):
                 if vk == 0x7B:
                     self.close()
                     return
@@ -967,13 +1030,15 @@ class App:
             return
         self.closing = True
         self.starting = False
+        self.clicker_opening = False
+        self.clicker.request_close()
         self.watcher.close()
         self.root.withdraw()
         self.finish_close()
 
     def finish_close(self):
         # Let a pending message release and capture-process cleanup finish.
-        if self.watcher.thread and self.watcher.thread.is_alive():
+        if self.clicker.poll() or (self.watcher.thread and self.watcher.thread.is_alive()):
             self.root.after(30, self.finish_close)
         else:
             self.root.destroy()
@@ -1039,6 +1104,7 @@ def runtime_self_test(destination):
         import tkinter as tk
         from PIL import Image, ImageTk
         background = load_background()
+        clicker = verify_clicker()
         templates = load_templates()
         cell_width = max(template.width for _, template in templates) + 30
         cell_height = max(template.height for _, template in templates) + 30
@@ -1055,7 +1121,7 @@ def runtime_self_test(destination):
         if (photo.width(), photo.height()) != (708, 807):
             raise RuntimeError("Embedded background has unexpected dimensions")
         root.update_idletasks()
-        report.update(ok=True, background=list(background.size), detected_chests=len(detections),
+        report.update(ok=True, background=list(background.size), detected_chests=len(detections), clicker=clicker,
                       template_variants=len(templates),
                       tk=str(root.tk.call("info", "patchlevel")), default_mode=DEFAULTS["mode"],
                       modes=list(MODE_NAMES), mode_descriptions=MODE_DESCRIPTIONS)

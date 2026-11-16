@@ -84,6 +84,12 @@ def portable_instructions(version: str) -> str:
    请提供该 JSON 文件用于排查。数据目录默认在 EXE 旁；不可写时使用 %LOCALAPPDATA%\\WuwaTappoChestHelper。
    命令行也可使用 WuwaTappoChestHelper.exe --diagnose diagnostics/manual.json，默认读取配置中的模式。
    可加 --mode borderless、--mode background 或 --mode visible 指定诊断方式。
+8. 点击“打开内置连点器”可打开 MouseClickTool 3.3 原版窗口，无需另行下载。
+   打开前会暂停宝箱领取，并等待正在处理的领取操作结束；请在连点器窗口自行设置并开始。
+   连点器打开期间，助手 F8/F12 暂不响应；可在助手点击“关闭内置连点器”或直接关闭它的窗口。
+   关闭后快捷键恢复，宝箱领取仍保持暂停，需要手动继续。退出助手也会关闭从助手打开的连点器，
+   不影响独立手动打开的其他实例。启动助手不会自动打开连点器。
+   连点器需要 .NET Framework 4.6.2 或更高版本（Windows 10/11 通常自带）。
 
 宝箱图案和背景图已内置，不需要截图或配置图片。
 1.9.0 支持桌宠 50%～200% 连续整数比例，内置气泡、箱体和箱盖原始三张 PNG 自动识别大小。
@@ -113,6 +119,7 @@ def portable_instructions(version: str) -> str:
 SHA256SUMS.txt 可用于检查 EXE 和运行依赖是否完整。项目源码和构建方法见 GitHub 仓库 README。
 遮挡后台截图使用 MaaFramework；第三方许可和来源见 THIRD_PARTY_NOTICES.md 与 licenses/。
 chest_artwork.py 三张 PNG 来自 WuwaTappo 1.0.4 UI，不包含其程序源码；图像权利归原作者，不适用本项目 MIT 授权。
+MouseClickTool 3.3 为用户提供的未修改原始程序，Copyright (C) 2026 lalaki.cn；版权归原作者，不适用本项目 MIT 授权。
 """
 
 
@@ -134,6 +141,8 @@ def build(clean: bool = False) -> list[Path]:
             raise RuntimeError("Please close the running packaged helper, then build again.") from exc
 
     from ui_assets import write_icon
+    from chest_clicker import verify_clicker, bundled_clicker_path
+    verify_clicker(ROOT)
 
     icon = work / "app.ico"
     write_icon(icon)
@@ -149,6 +158,7 @@ def build(clean: bool = False) -> list[Path]:
         # Keep its DLLs adjacent in maa/bin so ctypes can load their dependencies.
         "--collect-all", "maa", "--copy-metadata", "MaaFw",
         "--copy-metadata", "StrEnum", "--copy-metadata", "Pillow",
+        "--add-data", str(bundled_clicker_path(ROOT)) + os.pathsep + "bundled_tools",
     ]
     if clean:
         command.append("--clean")
