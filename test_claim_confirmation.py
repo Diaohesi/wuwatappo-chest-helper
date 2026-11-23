@@ -169,7 +169,7 @@ class ClaimConfirmationTests(unittest.TestCase):
         self.assertEqual(self.watcher.pending, [])
         self.assertEqual(len(self.sent), 2)
 
-    def test_unchanged_target_retries_after_four_seconds_then_pauses_at_three(self):
+    def test_unchanged_target_spaces_retries_and_remains_active_after_three(self):
         self.initial_click()
         self.tick(3.9)
         self.assertEqual(len(self.sent), 1)
@@ -179,16 +179,19 @@ class ClaimConfirmationTests(unittest.TestCase):
         self.tick(2.01)
         self.assertEqual(len(self.sent), 3)
         self.assertTrue(self.watcher.active.is_set())
-        self.tick(4.01)
-        self.assertFalse(self.watcher.active.is_set())
-        self.tick(100., count=3)
-        self.assertEqual(len(self.sent), 3)
+        for wait, before in ((10, 3), (20, 4), (40, 5), (60, 6), (60, 7)):
+            self.tick(wait-1.)
+            self.assertEqual(len(self.sent), before)
+            self.tick(1.01)
+            self.assertEqual(len(self.sent), before+1)
+        self.assertTrue(self.watcher.active.is_set())
         self.assertEqual(self.watcher.confirmed, 0)
-        self.assertTrue(any(kind == "error" and "3 次" in text for kind, text in self.drain()))
+        self.assertFalse(any(kind == "error" for kind, _ in self.drain()))
 
     def test_manual_continue_resets_failed_budget_without_immediate_failure(self):
         self.initial_click()
         self.tick(1., count=12)
+        self.watcher.pause()
         self.assertFalse(self.watcher.active.is_set())
         self.assertEqual(len(self.sent), 3)
         self.watcher.reset_pending_attempts()
@@ -216,6 +219,22 @@ class ClaimConfirmationTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.tick(1.01)
         self.assertEqual(len(self.sent), 2)
+
+    def test_half_hour_refresh_after_unknown_absence_starts_fresh_without_credit(self):
+        self.initial_click()
+        for cycle in range(4):
+            self.occluded = True
+            self.frame = self.make_frame()
+            self.tick(600., count=3)
+            self.occluded = False
+            self.frame = self.make_frame((20, 20, 1))
+            self.tick(1.)
+            self.assertEqual(len(self.sent), cycle+1)
+            self.tick(4.1)
+            self.assertEqual(len(self.sent), cycle+2)
+            self.assertEqual(self.watcher.pending[0].attempts, 1)
+            self.assertEqual(self.watcher.confirmed, 0)
+            self.assertTrue(self.watcher.active.is_set())
 
     def test_lock_and_hidden_window_do_not_confirm_disappearance(self):
         for unknown in ("lock", "hidden"):

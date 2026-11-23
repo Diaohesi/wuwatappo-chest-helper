@@ -42,9 +42,10 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.10.2"
 CLAIM_RETRY_WAIT = 4.0
-CLAIM_MAX_ATTEMPTS = 3
+CLAIM_RETRY_DELAYS = (4., 4., 10., 20., 40., 60.)
+CHEST_REFRESH_SECONDS = 30 * 60
 
 
 @dataclass
@@ -57,10 +58,30 @@ class PendingClaim:
     window_rect: tuple[int, int, int, int]
     frame_digest: str | None = None
     render_signature: tuple | None = None
+    last_seen_at: float | None = None
 
     def retry_due(self, now):
+        delay = CLAIM_RETRY_DELAYS[min(max(self.attempts-1, 0), len(CLAIM_RETRY_DELAYS)-1)]
         return (self.visible_since is not None and now-self.visible_since >= CLAIM_RETRY_WAIT
-                and now-self.last_attempt >= CLAIM_RETRY_WAIT)
+                and now-self.last_attempt >= delay)
+
+    def observe_presence(self, present, now):
+        if present is not True:
+            self.visible_since = None
+            return
+        # A slot may reappear after a refresh without observable disappearance.
+        # Reset its retry delay but never count that old click as confirmed.
+        last_seen = self.last_seen_at if self.last_seen_at is not None else self.last_attempt
+        if now-self.last_attempt >= CHEST_REFRESH_SECONDS and now-last_seen >= CHEST_REFRESH_SECONDS-60:
+            self.attempts = 0
+            self.visible_since = None
+        self.last_seen_at = now
+        if self.visible_since is None:
+            self.visible_since = now
+
+    def record_input(self, now):
+        self.attempts += 1
+        self.last_attempt = self.last_seen_at = self.visible_since = now
 
 
 def same_button_box(a, b):
@@ -182,11 +203,12 @@ class Watcher:
         self.wake_event.set()
 
     def reset_pending_attempts(self):
-        """An explicit manual start/continue grants one fresh bounded retry budget."""
+        """An explicit manual continue starts a fresh observation and retry sequence."""
         now = time.monotonic()
         for claim in self.pending:
             claim.attempts = 0
             claim.last_attempt = now
+            claim.last_seen_at = None
             claim.visible_since = None
             claim.lock.missing_frames = 0
 
@@ -250,21 +272,13 @@ class Watcher:
     def observe_claim(self, lock, present, now):
         claim = next((p for p in self.pending if p.lock is lock), None)
         if claim is not None:
-            if present is not True:
-                claim.visible_since = None
-            elif claim.visible_since is None:
-                claim.visible_since = now
+            claim.observe_presence(present, now)
         if self.ledger.observe(lock, present):
             if claim is not None:
                 self.pending.remove(claim)
                 self.confirmed += 1
                 self.post("confirmed", str(self.confirmed))
                 self.post("log", "已确认宝箱图案消失：原位置连续两帧未出现图案，等待再次刷新。")
-            return
-        if (claim is not None and present is True and claim.retry_due(now)
-                and claim.attempts >= CLAIM_MAX_ATTEMPTS):
-            self.active.clear()
-            self.post("error", "同一宝箱已尝试 3 次，图案仍在，已暂停领取。检查后可按 F8 继续重试。")
 
     def run(self):
         try:
@@ -439,7 +453,7 @@ class Watcher:
                 claim = self.pending_at((window.hwnd, window.pid), box)
                 if claim is not None:
                     ready = (self.gate.states[key].stable_frames >= self.gate.required
-                             and claim.retry_due(time.monotonic()) and claim.attempts < CLAIM_MAX_ATTEMPTS)
+                             and claim.retry_due(time.monotonic()))
                 if ready and (claim is not None or not self.ledger.blocked((window.hwnd, window.pid), box)):
                     ready_targets.append((window, index, match, key, claim))
         for key in set(self.gate.states)-seen:
@@ -451,7 +465,7 @@ class Watcher:
                 return
             # New ready buttons remain independent while an earlier one awaits
             # confirmation; retries never monopolize both treasure slots.
-            window, index, match, key, claim = min(ready_targets, key=lambda target: target[4] is not None)
+            window, index, match, key, claim = min(ready_targets, key=self.target_priority)
             if not desktop.window_is_current(window):
                 self.gate.reset_observations()
                 return
@@ -504,21 +518,25 @@ class Watcher:
                                 and same_button_box(lock.box, (verify.x, verify.y, verify.width, verify.height)))
                     claim = PendingClaim(lock, 0, sent_at, sent_at, window.rect)
                     self.pending.append(claim)
-                claim.attempts += 1
-                claim.last_attempt = claim.visible_since = sent_at
+                claim.record_input(sent_at)
                 claim.window_rect = window.rect
                 claim.lock.box = (verify.x, verify.y, verify.width, verify.height)
                 claim.lock.missing_frames = 0
                 self.clicks += 1
                 self.post("count", str(self.clicks))
-                self.post("log", f"已发出宝箱点击（第 {claim.attempts}/3 次），相似度 {verify.score:.3f}；等待确认图案消失。")
+                self.post("log", f"已发出宝箱点击（第 {claim.attempts} 次），相似度 {verify.score:.3f}；等待确认图案消失。")
             else:
                 self.post("status", "宝箱位置被遮挡或窗口已移动，本次跳过。")
             return
         if self.pending:
-            self.post("status", f"有 {len(self.pending)} 个已发点击等待确认；图案仍在时最多尝试 3 次。")
+            self.post("status", f"有 {len(self.pending)} 个宝箱等待确认；图案仍在时将自动重试。")
         else:
             self.post("status", f"正在等待宝箱各自刷新；当前检查间隔 {self.next_interval():g} 秒。")
+
+    @staticmethod
+    def target_priority(target):
+        claim = target[4]
+        return (claim is not None, claim.last_attempt if claim is not None else 0.)
 
     @staticmethod
     def background_signature(frame):
@@ -594,6 +612,11 @@ class Watcher:
             signature = self.background_signature(frame)
             if present is not None:
                 _, match = present
+                # An unchanged copy of the frame used to send the last click
+                # cannot show that the chest is still ready after that input.
+                if claim is not None and frame.digest == claim.frame_digest:
+                    self.observe_claim(lock, None, now)
+                    continue
                 lock.box = (match.x, match.y, match.width, match.height)
                 if claim is not None:
                     claim.window_rect = frame.input.rect
@@ -631,7 +654,7 @@ class Watcher:
                 claim = self.pending_at(window_key, box)
                 if claim is not None:
                     ready = (self.gate.states[key].stable_frames >= self.gate.required
-                             and claim.retry_due(now) and claim.attempts < CLAIM_MAX_ATTEMPTS)
+                             and claim.retry_due(now))
                 if ready and (claim is not None or not self.ledger.blocked(window_key, box)):
                     ready_targets.append((frame, index, match, key, claim))
         for key in set(self.gate.states)-seen:
@@ -640,7 +663,7 @@ class Watcher:
         if not ready_targets:
             self.post("status", f"后台领取中；等待图案刷新或确认，检查间隔 {self.next_interval():g} 秒。")
             return
-        selected, index, match, key, claim = min(ready_targets, key=lambda t: t[4] is not None)
+        selected, index, match, key, claim = min(ready_targets, key=self.target_priority)
         try:
             fresh = self.background_capture.grab(selected.render, selected.input, should_cancel=cancelled)
         except desktop.CaptureUnavailable:
@@ -652,6 +675,7 @@ class Watcher:
             return
         if (cancelled() or not desktop.window_is_current(fresh.render)
                 or not desktop.window_is_current(fresh.input)
+                or (claim is not None and fresh.digest == claim.frame_digest)
                 or self.background_signature(fresh) != self.background_signature(selected)):
             self.gate.reset_observations()
             return
@@ -683,8 +707,7 @@ class Watcher:
                             if lock.window_key == window_key and same_button_box(lock.box, box))
                 claim = PendingClaim(lock, 0, sent_at, sent_at, fresh.input.rect)
                 self.pending.append(claim)
-            claim.attempts += 1
-            claim.last_attempt = claim.visible_since = sent_at
+            claim.record_input(sent_at)
             claim.window_rect = fresh.input.rect
             claim.lock.box = (verify.x, verify.y, verify.width, verify.height)
             claim.frame_digest = fresh.digest
@@ -692,7 +715,7 @@ class Watcher:
             claim.lock.missing_frames = 0
             self.clicks += 1
             self.post("count", str(self.clicks))
-            self.post("log", f"已发送后台宝箱点击（第 {claim.attempts}/3 次）；等待新画面确认图案消失。")
+            self.post("log", f"已发送后台宝箱点击（第 {claim.attempts} 次）；等待新画面确认图案消失。")
         else:
             self.post("status", "后台窗口状态已变化，本次未点击。")
 

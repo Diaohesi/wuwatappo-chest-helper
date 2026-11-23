@@ -195,7 +195,7 @@ class Win11WatcherTests(unittest.TestCase):
                 self.assertEqual(self.sent, [])
                 self.assertEqual(self.watcher.pending, [])
 
-    def test_win11_chest_retries_keep_one_pending_claim_and_stop_at_three(self):
+    def test_new_chest_claim_and_confirmation_continue_during_other_chest_backoff(self):
         for mode in ("visible", "borderless", "background"):
             with self.subTest(mode=mode), self.session(mode):
                 self.frame = erase_glyphs(self.frame, lower=True)
@@ -205,8 +205,21 @@ class Win11WatcherTests(unittest.TestCase):
                 self.assertEqual(self.sent, [CENTERS[0]]*3)
                 self.assertEqual(self.watcher.pending, [claim])
                 self.assertEqual(claim.attempts, 3)
-                self.assertFalse(self.watcher.active.is_set())
+                self.assertTrue(self.watcher.active.is_set())
                 self.assertEqual(self.watcher.confirmed, 0)
+                self.frame = load_fixture("win11_chests.png")
+                self.tick(count=2)
+                self.assertEqual(self.sent, [CENTERS[0]]*3 + [CENTERS[1]])
+                self.frame = erase_glyphs(self.frame, lower=True)
+                self.tick(count=2)
+                self.assertEqual(self.watcher.confirmed, 1)
+                self.tick(delta=5.)
+                self.assertEqual(self.sent[-1], CENTERS[0])
+                self.assertEqual(claim.attempts, 4)
+                self.frame = erase_glyphs(self.frame, upper=True)
+                self.tick(count=2)
+                self.assertEqual(self.watcher.confirmed, 2)
+                self.assertEqual(self.watcher.pending, [])
 
 
 if __name__ == "__main__":

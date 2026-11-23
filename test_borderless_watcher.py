@@ -242,11 +242,13 @@ class BorderlessWatcherTests(unittest.TestCase):
         self.click.assert_not_called()
         self.assertEqual(self.sent, [])
 
-    def test_three_failed_attempts_pause_without_falling_back_to_physical_input(self):
+    def test_failed_attempts_continue_without_falling_back_to_physical_input(self):
         self.initial_click()
         self.tick(2.1, count=6)
         self.assertEqual(len(self.sent), 3)
-        self.assertFalse(self.watcher.active.is_set())
+        self.assertTrue(self.watcher.active.is_set())
+        self.tick(6.)
+        self.assertEqual(len(self.sent), 4)
         self.assertEqual(self.watcher.confirmed, 0)
         for operation in self.forbidden:
             operation.assert_not_called()

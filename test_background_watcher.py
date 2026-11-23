@@ -142,6 +142,18 @@ class BackgroundWatcherTests(unittest.TestCase):
         self.assertTrue(self.watcher.active.is_set())
         self.manager.close.assert_called()
 
+    def test_cached_preclick_frame_cannot_drive_retries(self):
+        self.initial_click()
+        self.fresh = False
+        self.tick(60., count=5)
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.watcher.active.is_set())
+        self.assertEqual(self.watcher.confirmed, 0)
+        self.fresh = True
+        self.tick()
+        self.tick(4.01)
+        self.assertEqual(len(self.sent), 2)
+
     def test_capture_reconnection_requires_two_new_missing_observations(self):
         self.initial_click()
         self.frame = self.make_frame()
@@ -239,12 +251,14 @@ class BackgroundWatcherTests(unittest.TestCase):
         self.assertEqual(self.watcher.clicks, 1)
         self.assertEqual(self.watcher.confirmed, 7)
 
-    def test_three_failed_attempts_pause_without_real_input_fallback(self):
+    def test_failed_attempts_continue_without_real_input_fallback(self):
         self.initial_click()
         # Two stable frames per retry and at least four seconds between sends.
         self.tick(2.1, count=6)
         self.assertEqual(len(self.sent), 3)
-        self.assertFalse(self.watcher.active.is_set())
+        self.assertTrue(self.watcher.active.is_set())
+        self.tick(6.)
+        self.assertEqual(len(self.sent), 4)
         self.assertEqual(self.watcher.confirmed, 0)
         for operation in self.forbidden:
             operation.assert_not_called()
