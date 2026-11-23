@@ -186,6 +186,7 @@ class ClickerAppTests(ClickerMocks, unittest.TestCase):
         self.app.watcher.close = MagicMock(wraps=self.app.watcher.close)
         self.app.clicker = clicker.ClickerProcess()
         self.app.closing = self.app.previewing = self.app.starting = False
+        self.app.tray = None
         self.app.clicker_opening = self.app.clicker_was_running = False
         self.app.key_states = {}
         self.app.events = queue.Queue()

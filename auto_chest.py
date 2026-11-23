@@ -42,7 +42,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.10.2"
+APP_VERSION = "1.11.0"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_RETRY_DELAYS = (4., 4., 10., 20., 40., 60.)
 CHEST_REFRESH_SECONDS = 30 * 60
@@ -742,6 +742,7 @@ class App:
         self.previewing = False
         self.starting = False
         self.closing = False
+        self.tray = None
         self.settings = read_config()
         self.threshold = tk.StringVar(value=str(self.settings["threshold"]))
         self.interval = tk.StringVar(value=str(self.settings["interval"]))
@@ -804,8 +805,12 @@ class App:
         self.minimize_button = ttk.Button(secondary, text="最小化", width=7, style="Chest.TButton", command=self.root.iconify)
         self.minimize_button.pack(side="left", padx=(8, 0))
         ttk.Button(secondary, text="退出  /  F12", style="Chest.TButton", command=self.close).pack(side="left", padx=(8, 0))
-        self.clicker_button = ttk.Button(frame, text="打开内置连点器", style="Chest.TButton", command=self.toggle_clicker)
-        self.clicker_button.pack(fill="x", pady=(2, 2))
+        utilities = ttk.Frame(frame, style="Chest.TFrame")
+        utilities.pack(fill="x", pady=2)
+        self.clicker_button = ttk.Button(utilities, text="打开内置连点器", style="Chest.TButton", command=self.toggle_clicker)
+        self.clicker_button.pack(side="left", fill="x", expand=True)
+        self.tray_button = ttk.Button(utilities, text="隐藏到托盘", style="Chest.TButton", command=self.hide_to_tray)
+        self.tray_button.pack(side="right", padx=(8, 0))
         self.clicker_help = tk.StringVar(value="MouseClickTool 3.3：打开后在其窗口设置并开始；退出助手会同时关闭它。")
         ttk.Label(frame, textvariable=self.clicker_help, style="Chest.TLabel", wraplength=350,
                   foreground="#5f425c").pack(anchor="w", pady=(0, 4))
@@ -820,6 +825,31 @@ class App:
         problem = desktop.input_privilege_problem()
         if problem:
             self.show_privilege_problem(problem)
+
+    def hide_to_tray(self):
+        if self.closing or self.previewing or self.tray is not None:
+            return
+        from tkinter import messagebox
+        try:
+            from chest_tray import TrayIcon
+            self.tray_zoomed = self.root.state() == "zoomed"
+            self.tray = TrayIcon(self.root.winfo_id(), self.events)
+            self.root.withdraw()
+        except (ImportError, OSError, self.tk.TclError) as exc:
+            self.remove_tray()
+            messagebox.showerror("无法隐藏到托盘", f"{exc}\n可以使用“最小化”收起到任务栏。", parent=self.root)
+
+    def remove_tray(self):
+        if self.tray is not None:
+            self.tray.close()
+            self.tray = None
+
+    def restore_from_tray(self):
+        self.root.deiconify()
+        if self.tray_zoomed:
+            self.root.state("zoomed")
+        self.root.lift()
+        self.remove_tray()
 
     def queue_background(self, event):
         if self.background_job is not None:
@@ -1020,7 +1050,14 @@ class App:
         try:
             while True:
                 kind, text = self.events.get_nowait()
-                if kind == "status" and self.watcher.active.is_set():
+                if kind in ("tray_restore", "tray_exit"):
+                    if text is not self.tray or self.tray is None:
+                        continue  # Discard duplicate notifications from an earlier icon.
+                    if kind == "tray_exit":
+                        self.close()
+                        return
+                    self.restore_from_tray()
+                elif kind == "status" and self.watcher.active.is_set():
                     self.status.set(text)
                 elif kind in ("count", "confirmed"):
                     self.count.set(f"已发出点击：{self.watcher.clicks}；确认图案消失：{self.watcher.confirmed}")
@@ -1054,6 +1091,7 @@ class App:
         if self.closing:
             return
         self.closing = True
+        self.remove_tray()
         self.starting = False
         self.clicker_opening = False
         self.clicker.request_close()
@@ -1146,6 +1184,8 @@ def runtime_self_test(destination):
         if (photo.width(), photo.height()) != (708, 807):
             raise RuntimeError("Embedded background has unexpected dimensions")
         root.update_idletasks()
+        from chest_tray import self_test as tray_self_test
+        report["tray"] = tray_self_test(root.winfo_id())
         report.update(ok=True, background=list(background.size), detected_chests=len(detections), clicker=clicker,
                       template_variants=len(templates),
                       tk=str(root.tk.call("info", "patchlevel")), default_mode=DEFAULTS["mode"],
