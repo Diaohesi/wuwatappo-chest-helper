@@ -42,7 +42,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.11.1"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_RETRY_DELAYS = (4., 4., 10., 20., 40., 60.)
 CHEST_REFRESH_SECONDS = 30 * 60

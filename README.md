@@ -133,7 +133,7 @@ python build_windows.py --clean
 
 - `WuwaTappoChestHelper.exe`：图形程序入口，与旁边的 `_internal` 一起使用。
 - `_internal/`：内置 Python、界面库、背景图、宝箱图案、后台截图组件与 `bundled_tools/MouseClickTool.exe`，必须完整保留。
-- `WuwaTappoChestHelper-v1.11.0-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
+- `WuwaTappoChestHelper-v1.11.1-windows-x64.zip`：完整程序、说明、第三方许可和校验信息。
 - `SHA256SUMS.txt`：EXE、运行依赖、说明、许可与 ZIP 的 SHA256 校验。
 - `THIRD_PARTY_NOTICES.md` / `licenses/`：第三方组件的来源和许可文本。
 

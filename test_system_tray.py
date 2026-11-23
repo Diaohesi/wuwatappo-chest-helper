@@ -97,3 +97,12 @@ class TrayTests(unittest.TestCase):
         with patch.object(icon, "_add", side_effect=OSError("Explorer unavailable")), self.assertLogs(level="ERROR"):
             tray._send(icon.hwnd, icon.recreated, 0, 0)
         self.assertEqual(events.get_nowait(), ("tray_restore", icon))
+
+    def test_low_integrity_denial_is_optional_only_for_self_test(self):
+        with patch.object(tray, "integrity_level", return_value=0x1000), \
+                patch.object(tray, "_notify", return_value=False), patch.object(tray, "_filter") as filter_msg:
+            with self.assertRaises(tray.RestrictedTrayError):
+                tray.TrayIcon(0, queue.SimpleQueue())
+            with patch.object(tray, "_api", return_value=lambda *_: 1):
+                self.assertEqual(tray.self_test(0), "restricted_process")
+            filter_msg.assert_not_called()

@@ -3,7 +3,10 @@
 import ctypes as C
 from ctypes import wintypes as W
 import logging
+import os
 import queue
+
+from chest_windows import integrity_level
 
 
 class _IconData(C.Structure):
@@ -48,9 +51,14 @@ NIM_ADD, NIM_DELETE, NIM_SETVERSION = 0, 2, 4
 WM_CONTEXTMENU, NIN_SELECT, NIN_KEYSELECT = 0x7B, 0x400, 0x401
 
 
+class RestrictedTrayError(PermissionError):
+    """Explorer refused registration from a low-integrity process."""
+
+
 class TrayIcon:
     def __init__(self, tk_hwnd, events):
         self.events = events
+        self.integrity = integrity_level(os.getpid())
         self.recreated = _register("TaskbarCreated")
         self.handler = _proc(self._message)
         # A hidden top-level (not message-only) window receives Explorer's restart broadcast.
@@ -66,9 +74,11 @@ class TrayIcon:
                               or _load_icon(None, 32512))
             if not self.recreated or not _subclass(self.hwnd, self.handler, 1, 0):
                 raise C.WinError(C.get_last_error())
-            for msg in (self.recreated, CALLBACK):  # Also receive Explorer messages when elevated.
-                if not _filter(self.hwnd, msg, 1, None):
-                    raise C.WinError(C.get_last_error())
+            if self.integrity is None or self.integrity > 0x2000:
+                # Only higher-integrity windows need to allow messages from normal Explorer.
+                for msg in (self.recreated, CALLBACK):
+                    if not _filter(self.hwnd, msg, 1, None):
+                        raise C.WinError(C.get_last_error())
             self._add()
         except Exception:
             self.close()
@@ -76,6 +86,8 @@ class TrayIcon:
 
     def _add(self):
         if not (_notify(NIM_ADD, C.byref(self.data)) and _notify(NIM_SETVERSION, C.byref(self.data))):
+            if self.integrity is not None and self.integrity < 0x2000:
+                raise RestrictedTrayError("Windows 限制了当前进程访问系统托盘，主窗口将保持显示。")
             raise OSError("Windows 通知区域暂不可用。")
 
     def _message(self, hwnd, msg, wp, lp, _id, _ref):
@@ -130,7 +142,10 @@ def self_test(tk_hwnd):
     if not find("Shell_TrayWnd", None):
         return "shell_unavailable"
     events = queue.SimpleQueue()
-    icon = TrayIcon(tk_hwnd, events)
+    try:
+        icon = TrayIcon(tk_hwnd, events)
+    except RestrictedTrayError:
+        return "restricted_process"
     try:
         _send(icon.hwnd, CALLBACK, 0, ICON_ID << 16 | NIN_KEYSELECT)
         if events.get_nowait() != ("tray_restore", icon):
