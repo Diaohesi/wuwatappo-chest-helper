@@ -66,7 +66,7 @@ class BorderlessWatcherTests(unittest.TestCase):
             image.paste(templates[variant], (x, y))
         return image
 
-    def capture_frame(self):
+    def capture_frame(self, windows):
         if self.capture_hook:
             self.capture_hook(self.capture.call_count)
         return self.frame.copy(), self.screen_origin

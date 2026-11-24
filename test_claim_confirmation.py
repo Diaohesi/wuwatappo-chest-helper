@@ -50,7 +50,7 @@ class ClaimConfirmationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(auto_chest.time, "monotonic", side_effect=lambda: self.now))
         self.stack.enter_context(patch.object(auto_chest.desktop, "is_desktop_available", side_effect=lambda: self.desktop_available))
         self.stack.enter_context(patch.object(auto_chest.desktop, "find_pet_windows", side_effect=lambda: self.windows))
-        self.stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda: (self.frame.copy(), (0, 0))))
+        self.stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda windows: (self.frame.copy(), (0, 0))))
         self.stack.enter_context(patch.object(auto_chest.desktop, "point_hits_window", side_effect=lambda *_: not (self.occluded or self.clickthrough)))
         self.stack.enter_context(patch.object(auto_chest.desktop, "can_observe_disappearance", side_effect=lambda *_: not self.occluded))
         self.stack.enter_context(patch.object(auto_chest.desktop, "window_is_current", return_value=True))

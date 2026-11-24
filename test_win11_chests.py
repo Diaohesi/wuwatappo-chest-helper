@@ -136,7 +136,7 @@ class Win11WatcherTests(unittest.TestCase):
         image.putpixel((0, 0), (self.serial % 255, 45, 60))
         return image
 
-    def desktop_frame(self):
+    def desktop_frame(self, windows):
         return self.next_image(), (0, 0)
 
     def background_frame(self, render, input_window, should_cancel=None):

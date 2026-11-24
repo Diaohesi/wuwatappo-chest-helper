@@ -53,7 +53,7 @@ class ScaledWatcherTests(unittest.TestCase):
                 stack.enter_context(patch.object(auto_chest.bg, "background_click", side_effect=self.record_click))
             else:
                 stack.enter_context(patch.object(auto_chest.bg, "BackgroundCapture", side_effect=AssertionError("Unexpected native capture")))
-                stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda: (self.next_image(), (0, 0))))
+                stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda windows: (self.next_image(), (0, 0))))
                 stack.enter_context(patch.object(auto_chest.desktop, "point_hits_window", side_effect=lambda x, y, window: window == self.input))
                 stack.enter_context(patch.object(auto_chest.desktop, "can_observe_disappearance", return_value=True))
                 if mode == "visible":

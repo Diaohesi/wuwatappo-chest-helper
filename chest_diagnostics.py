@@ -110,11 +110,12 @@ def _search(image, templates, threshold):
     return matches, best, skipped
 
 
-def _candidate(variant, match, window, crop_origin, bounds, image_size, mode, paired_inputs, *, best=False):
+def _candidate(variant, match, window, crop_origin, bounds, image_size, mode, paired_inputs, *, best=False, layout=()):
     x, y = crop_origin[0]+match.x, crop_origin[1]+match.y
     box = int(x), int(y), int(match.width), int(match.height)
     center = int(crop_origin[0]+match.center[0]), int(crop_origin[1]+match.center[1])
-    in_capture = (_contains(bounds, box)
+    in_capture = (_contains(bounds, box) and (not layout or desktop.displays.covered(
+                  (x, y, x+match.width, y+match.height), (m.rect for m in layout)))
                   and _contains((crop_origin[0], crop_origin[1], crop_origin[0]+image_size[0], crop_origin[1]+image_size[1]), box))
     result = {"variant": variant, "score": round(float(match.score), 6), "box": list(box),
               "center": list(center), "window_hwnd": int(window.hwnd), "window_pid": int(window.pid),
@@ -187,6 +188,7 @@ def collect_diagnostics(templates, threshold, mode, crop_window) -> dict:
         report["errors"].append(_error("desktop_availability", exc))
     try:
         report["virtual_screen"] = list(desktop.virtual_rect())
+        report["monitors"] = [vars(m) for m in desktop.displays.monitors()]
     except Exception as exc:
         report["errors"].append(_error("virtual_screen", exc))
     try:
@@ -216,7 +218,7 @@ def collect_diagnostics(templates, threshold, mode, crop_window) -> dict:
         return _finish(report)
     paired_inputs = {(window.hwnd, window.pid) for _, window in pairs}
 
-    def search_window(image, window, origin, bounds, cache, cache_key):
+    def search_window(image, window, origin, bounds, cache, cache_key, layout=()):
         record = by_key[(window.hwnd, window.pid)]
         try:
             if cache_key not in cache:
@@ -228,10 +230,10 @@ def collect_diagnostics(templates, threshold, mode, crop_window) -> dict:
             record["image_status"] = "ok"
             for variant, match in matches:
                 report["candidates"].append(_candidate(variant, match, window, origin, bounds,
-                    image.size, mode, paired_inputs))
+                    image.size, mode, paired_inputs, layout=layout))
             for variant, match in best:
                 report["best_matches"].append(_candidate(variant, match, window, origin, bounds,
-                    image.size, mode, paired_inputs, best=True))
+                    image.size, mode, paired_inputs, best=True, layout=layout))
         except Exception as exc:
             record["image_status"] = "error"
             failure = _error("window_recognition", exc, window.hwnd)
@@ -269,7 +271,10 @@ def collect_diagnostics(templates, threshold, mode, crop_window) -> dict:
                     report["errors"].append(_error("capture_close", exc))
     else:
         try:
-            image, origin = desktop.capture_desktop()
+            image, origin = desktop.capture_desktop(windows)
+            layout = image.info.get('monitor_layout', ())
+            if layout:
+                report['monitors'] = [vars(m) for m in layout]
             bounds = (origin[0], origin[1], origin[0]+image.width, origin[1]+image.height)
             report["captures"].append({"source": "desktop", "size": list(image.size),
                 "origin": list(origin), "bounds": list(bounds)})
@@ -285,7 +290,7 @@ def collect_diagnostics(templates, threshold, mode, crop_window) -> dict:
                 crop = crops[window.rect]
                 if crop is None:
                     raise RuntimeError("窗口与真实截图范围没有可识别的交集。")
-                search_window(crop, window, window.rect[:2], bounds, searches, window.rect)
+                search_window(crop, window, window.rect[:2], bounds, searches, window.rect, layout)
             except Exception as exc:
                 record["image_status"] = "error"
                 failure = _error("window_crop", exc, window.hwnd)

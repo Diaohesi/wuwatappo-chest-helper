@@ -75,6 +75,12 @@ class NativeFixture(unittest.TestCase):
 
 
 class BackgroundPairTests(NativeFixture):
+    def test_secondary_render_selected_by_input_window_if_process_has_two_outputs(self):
+        other = WindowInfo(103, 301, 'Wuwa Tappo', (-1920, 0, 0, 1080))
+        target = WindowInfo(102, 301, 'DesktopCatInput', (-230, 50, -130, 150))
+        self.pids[103], self.rects[103], self.rects[102] = 301, other.rect, target.rect
+        self.assertEqual(bg.find_background_pairs([self.render, target, other]), [(other, target)])
+
     def test_pair_requires_same_verified_process_and_distinct_native_layer(self):
         self.assertEqual(bg.find_background_pairs([self.render, self.input]), [(self.render, self.input)])
         other = WindowInfo(103, 302, "DesktopCatInput", self.input.rect)

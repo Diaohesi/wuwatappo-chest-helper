@@ -34,6 +34,7 @@ class BackgroundFrame:
     digest: str
     changed: bool
     origin: tuple[int, int] | None = None
+    monitor: desktop.displays.Monitor | None = None
 
 
 if desktop._IS_WINDOWS:
@@ -103,8 +104,15 @@ def find_background_pairs(windows: list[desktop.WindowInfo]):
         inputs = [window for window in windows
                   if window.pid == pid and window.title == "DesktopCatInput"
                   and desktop._window_class(window.hwnd) == "DesktopCatInput"]
-        if len(renders) == len(inputs) == 1 and _pair_is_current(renders[0], inputs[0]):
-            pairs.append((renders[0], inputs[0]))
+        if len(inputs) != 1:
+            continue  # Multiple native input layers in one process remain ambiguous.
+        target = inputs[0]
+        if len(renders) > 1:
+            # Some pets create a render window per display. Select only an unambiguous
+            # window that contains the input layer; do not pick an arbitrary screen.
+            renders = [r for r in renders if desktop.displays.intersection(r.rect, target.rect) == target.rect]
+        if len(renders) == 1 and _pair_is_current(renders[0], target):
+            pairs.append((renders[0], target))
     return pairs
 
 
@@ -290,8 +298,6 @@ class BackgroundCapture:
             raise
         child.close()
         self._connection, self._process = parent, process
-        self._key = (render.hwnd, render.pid, render.rect,
-                     input_window.hwnd, input_window.pid, input_window.rect)
 
     def grab(self, render, input_window, should_cancel: Callable[[], bool] | None = None):
         """Read one unscaled frame or raise CaptureUnavailable and reconnect later.
@@ -309,10 +315,13 @@ class BackgroundCapture:
             if not _pair_is_current(render, input_window):
                 raise desktop.CaptureUnavailable("桌宠后台窗口已变化，正在等待重新连接。")
             origin, size = client_origin(render), _client_size(render)
+            monitor = desktop.displays.owning_display(input_window.rect, desktop.displays.monitors())
+            key += (monitor,)
             with self._mutex:
                 if self._key != key or self._process is None or not self._process.is_alive():
                     self._close_locked()
                     self._start_locked(render, input_window)
+                    self._key = key
                 process, connection = self._process, self._connection
                 connection.send("grab")
             deadline = time.monotonic()+self.timeout
@@ -328,6 +337,7 @@ class BackgroundCapture:
                 raise desktop.CaptureUnavailable("等待解锁或后台识别已暂停。")
             if (not _pair_is_current(render, input_window)
                     or origin != client_origin(render) or size != _client_size(render)
+                    or monitor != desktop.displays.owning_display(input_window.rect, desktop.displays.monitors())
                     or tuple(payload["size"]) != size or len(payload["rgb"]) != size[0]*size[1]*3):
                 raise desktop.CaptureUnavailable("桌宠窗口位置或大小已变化，已丢弃本次截图。")
             image = Image.frombytes("RGB", size, payload["rgb"])
@@ -339,7 +349,7 @@ class BackgroundCapture:
                     raise desktop.CaptureUnavailable("后台截图已暂停。")
                 changed = self._digest is not None and self._digest != digest
                 self._digest = digest
-            return BackgroundFrame(image, render, input_window, digest, changed, origin)
+            return BackgroundFrame(image, render, input_window, digest, changed, origin, monitor)
         except desktop.CaptureUnavailable:
             self.close()
             raise

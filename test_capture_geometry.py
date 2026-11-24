@@ -103,7 +103,7 @@ class WatcherCaptureGeometryTests(unittest.TestCase):
             image.paste(template, position)
         return image
 
-    def capture_frame(self):
+    def capture_frame(self, windows):
         if self.capture_hook:
             self.capture_hook(self.capture.call_count)
         return self.frame.copy(), self.origin
@@ -152,6 +152,36 @@ class WatcherCaptureGeometryTests(unittest.TestCase):
         self.frame = self.make_frame((-6, 22))
         self.tick(count=3)
         self.assertEqual(self.sent, [])
+
+    def test_monitor_gap_cannot_confirm_or_retry_pending_claim(self):
+        from chest_displays import Monitor
+        self.initial_click()
+        self.frame = self.make_frame()
+        self.frame.info['monitor_layout'] = (Monitor('left',(0,0,24,100),True,96), Monitor('right',(28,0,160,100),False,144))
+        self.tick(count=3)
+        self.assertEqual(self.sent, [(27, 26)])
+        self.assertEqual(self.watcher.confirmed, 0)
+        self.assertEqual(self.watcher.pending[0].lock.missing_frames, 0)
+
+    def test_changing_monitors_reobserves_resized_slot_without_pausing(self):
+        from chest_displays import Monitor
+        layout = (Monitor('left',(-200,0,0,100),False,144), Monitor('primary',(0,0,160,100),True,96))
+        self.frame.info['monitor_layout'] = layout
+        self.initial_click()
+        self.origin = (-200, 0)
+        self.window = WindowInfo(52,72,'DesktopCatInput',(-208,-8,-32,108))
+        self.render = WindowInfo(51,72,'Wuwa Tappo', self.window.rect)
+        self.frame = self.make_frame()
+        from chest_artwork import render_ready_interior
+        self.frame.paste(render_ready_interior(32,25), (80,50))
+        self.frame.info['monitor_layout'] = layout
+        self.tick()
+        self.assertEqual(self.sent, [(27,26)])
+        self.tick()
+        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(-110 <= self.sent[-1][0] <= -100)
+        self.assertTrue(self.watcher.active.is_set())
+        self.assertEqual(self.watcher.confirmed, 0)
 
     def test_high_scoring_match_in_padding_cannot_be_clicked(self):
         # Its center is visible at screen x=1, so center hit testing alone

@@ -101,6 +101,7 @@ class CaptureAvailabilityTests(unittest.TestCase):
     def test_uniform_capture_cannot_be_used_as_disappearance_evidence(self):
         from PIL import Image
         with patch.object(windows, "is_desktop_available", return_value=True), \
+                patch.object(windows.displays, "monitors", return_value=(windows.displays.Monitor('mock', (0, 0, 32, 24), True),)), \
                 patch.object(windows, "virtual_rect", return_value=(0, 0, 32, 24)), \
                 patch.object(windows.ImageGrab, "grab", return_value=Image.new("RGB", (32, 24), (0, 72, 126))):
             with self.assertRaises(windows.CaptureUnavailable):

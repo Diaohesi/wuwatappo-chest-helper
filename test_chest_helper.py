@@ -149,7 +149,7 @@ class WatcherTests(unittest.TestCase):
         self.stack.enter_context(patch.object(auto_chest.desktop, "is_desktop_available", return_value=True))
         self.stack.enter_context(patch.object(auto_chest.desktop, "find_pet_windows", side_effect=lambda: list(self.windows)))
         self.capture = self.stack.enter_context(patch.object(
-            auto_chest.desktop, "capture_desktop", side_effect=lambda: (self.frame.copy(), self.origin)))
+            auto_chest.desktop, "capture_desktop", side_effect=lambda windows: (self.frame.copy(), self.origin)))
         self.stack.enter_context(patch.object(
             auto_chest.desktop, "point_hits_window", side_effect=lambda x, y, w: w.hwnd == self.owner))
         self.stack.enter_context(patch.object(
@@ -231,7 +231,7 @@ class WatcherTests(unittest.TestCase):
         self.tick()
         count = 0
 
-        def capture():
+        def capture(windows):
             nonlocal count
             count += 1
             if count == 2:

@@ -41,7 +41,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.stack.enter_context(patch.object(diagnostics.desktop, "find_pet_windows", side_effect=lambda: self.windows))
         self.stack.enter_context(patch.object(diagnostics.bg, "find_background_pairs", side_effect=lambda _: self.pairs))
         self.privilege = self.stack.enter_context(patch.object(diagnostics.desktop, "input_privilege_problem", return_value=None))
-        self.capture = self.stack.enter_context(patch.object(diagnostics.desktop, "capture_desktop", side_effect=lambda: (self.image.copy(), self.origin)))
+        self.capture = self.stack.enter_context(patch.object(diagnostics.desktop, "capture_desktop", side_effect=lambda windows: (self.image.copy(), self.origin)))
         self.hit = self.stack.enter_context(patch.object(diagnostics.desktop, "point_hits_window", side_effect=lambda x, y, window: self.roots.get(self.owner, self.owner) == window.hwnd))
         self.background = self.stack.enter_context(patch.object(diagnostics.bg, "BackgroundCapture"))
         self.manager = self.background.return_value

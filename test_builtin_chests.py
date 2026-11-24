@@ -139,7 +139,7 @@ class BuiltinWatcherTests(unittest.TestCase):
         self.watcher.active.set()
         self.stack.enter_context(patch.object(auto_chest.desktop, "is_desktop_available", return_value=True))
         self.stack.enter_context(patch.object(auto_chest.desktop, "find_pet_windows", side_effect=lambda: [self.window]))
-        self.stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda: (self.frame.copy(), (0, 0))))
+        self.stack.enter_context(patch.object(auto_chest.desktop, "capture_desktop", side_effect=lambda windows: (self.frame.copy(), (0, 0))))
         self.stack.enter_context(patch.object(auto_chest.desktop, "point_hits_window", return_value=True))
         self.stack.enter_context(patch.object(auto_chest.desktop, "can_observe_disappearance", return_value=True))
         self.stack.enter_context(patch.object(auto_chest.desktop, "window_is_current", return_value=True))

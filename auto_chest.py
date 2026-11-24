@@ -42,7 +42,7 @@ MODE_DESCRIPTIONS = {
     "background": "可在普通全屏遮挡下领取，不移动鼠标；Windows 10 会显示系统黄色捕获框，其他系统视版本和授权而定。",
     "visible": "宝箱须可见；键鼠空闲 1.5 秒后短暂移动真实鼠标点击，适合定向消息不兼容时使用。",
 }
-APP_VERSION = "1.11.1"
+APP_VERSION = "1.12.0"
 CLAIM_RETRY_WAIT = 4.0
 CLAIM_RETRY_DELAYS = (4., 4., 10., 20., 40., 60.)
 CHEST_REFRESH_SECONDS = 30 * 60
@@ -116,7 +116,9 @@ def crop_window(image, origin, window):
     # Invisible frame margins may extend beyond a monitor. Keep coordinates
     # relative to the original window; padded pixels are never click/absence
     # evidence (every relevant region is checked against the actual capture).
-    if (width <= 0 or height <= 0 or width > image.width+128 or height > image.height+128
+    layout = image.info.get('monitor_layout')
+    full = desktop.displays.bounds([m.rect for m in layout]) if layout else (0, 0, image.width, image.height)
+    if (width <= 0 or height <= 0 or width > full[2]-full[0]+128 or height > full[3]-full[1]+128
             or x >= image.width or y >= image.height or x+width <= 0 or y+height <= 0):
         return None
     return image.crop((x, y, x+width, y+height))
@@ -125,7 +127,8 @@ def crop_window(image, origin, window):
 def rect_is_captured(rect, origin, image):
     left, top, right, bottom = rect
     return (origin[0] <= left < right <= origin[0]+image.width
-            and origin[1] <= top < bottom <= origin[1]+image.height)
+            and origin[1] <= top < bottom <= origin[1]+image.height
+            and ('monitor_layout' not in image.info or desktop.displays.covered(rect, (m.rect for m in image.info['monitor_layout']))))
 
 
 def match_is_captured(match, window, origin, image):
@@ -154,6 +157,8 @@ class Watcher:
         self.mode = "visible"
         self.background_capture = None
         self.layout_changed_windows = set()
+        self.window_displays = {}
+        self.last_layout = None
 
     def post(self, kind, text):
         self.events.put((kind, text))
@@ -171,6 +176,8 @@ class Watcher:
             self.ledger = ClickLedger()
             self.pending.clear()
             self.layout_changed_windows.clear()
+            self.window_displays.clear()
+            self.last_layout = None
         elif self.layout_changed_windows:
             # Only an explicit manual continue acknowledges an uncertain
             # layout. Automatic observations never remove its click budget
@@ -263,6 +270,20 @@ class Watcher:
                     self.post("error", "桌宠大小或布局已变化，已暂停；确认后按 F8 重新观察，未确认的领取不计成功。")
                     return True
         return False
+
+    def track_display(self, window, monitor):
+        if monitor is None:
+            return
+        key = window.hwnd, window.pid
+        current = monitor.device, monitor.dpi
+        previous = self.window_displays.get(key)
+        self.window_displays[key] = current
+        if previous is not None and current != previous:
+            # A DPI transition can move both slots. Never credit the old disappearance.
+            self.pending[:] = [c for c in self.pending if c.lock.window_key != key]
+            self.ledger.locks[:] = [lock for lock in self.ledger.locks if lock.window_key != key]
+            for track in [t for t in self.gate.states if t[1:] == key]:
+                del self.gate.states[track]
 
     def unknown_claims(self):
         for claim in self.pending:
@@ -359,17 +380,23 @@ class Watcher:
                 self.post("status", "等待桌宠的输入窗口；无黄框模式需要宝箱在桌面可见。")
                 return
         try:
-            image, origin = desktop.capture_desktop()
+            image, origin = desktop.capture_desktop(windows)
         except desktop.CaptureUnavailable:
             self.waiting_for_screen = True
             self.gate.reset_observations()
             self.unknown_claims()
             self.post("status", "暂时无法读取桌面画面，正在等待恢复；不会点击或确认领取。")
             return
+        layout = image.info.get('monitor_layout', ())
+        if layout != self.last_layout:
+            self.gate.reset_observations()
+            self.unknown_claims()
+            self.last_layout = layout
         crops, matches = {}, {}
         windows_by_key = {(w.hwnd, w.pid): w for w in windows}
         claim_matches = {}
         for window in windows:
+            self.track_display(window, desktop.displays.owning_display(window.rect, layout))
             if window.rect not in crops:
                 crops[window.rect] = crop_window(image, origin, window)
             crop = crops[window.rect]
@@ -470,7 +497,9 @@ class Watcher:
                 self.gate.reset_observations()
                 return
             try:
-                fresh, fresh_origin = desktop.capture_desktop()
+                fresh, fresh_origin = desktop.capture_desktop([window])
+                if fresh.info.get('monitor_layout', ()) != layout:
+                    raise desktop.CaptureUnavailable("显示器布局正在变化。")
             except desktop.CaptureUnavailable:
                 self.gate.reset_observations()
                 self.unknown_claims()
@@ -544,7 +573,7 @@ class Watcher:
         if origin is None:
             origin = bg.client_origin(frame.render)
         return (frame.render.hwnd, frame.render.pid, frame.render.rect,
-                frame.input.rect, origin)
+                frame.input.rect, origin, getattr(frame, 'monitor', None))
 
     def tick_background(self):
         """Observe render pixels and address only the paired native input layer."""
@@ -596,6 +625,8 @@ class Watcher:
                    for window_key, frame in frames.items()}
         claim_matches = {}
         for window_key, detections in matches.items():
+            frame = frames[window_key]
+            self.track_display(frame.input, getattr(frame, 'monitor', None))
             mapped = self.map_claim_matches(window_key, detections)
             claim_matches[window_key] = mapped
             if self.guard_changed_layout(window_key, detections, mapped):
@@ -691,8 +722,8 @@ class Watcher:
             return
         index, verify = max(checks, key=lambda item: item[1].score)
         signature = self.background_signature(fresh)
-        origin = bg.client_origin(fresh.render)
-        if origin != signature[-1]:
+        origin = signature[4]
+        if bg.client_origin(fresh.render) != origin:
             self.gate.reset_observations()
             return
         x, y = origin[0]+verify.center[0], origin[1]+verify.center[1]
@@ -1119,7 +1150,7 @@ def scan_background_once(templates, threshold):
     try:
         for render, input_window in pairs:
             frame = manager.grab(render, input_window)
-            origin = bg.client_origin(frame.render)
+            origin = frame.origin if getattr(frame, 'origin', None) is not None else bg.client_origin(frame.render)
             for index, match in detect_templates(frame.image, templates, threshold):
                 result.append({"variant": index, "window": render.title, "score": round(match.score, 4),
                                "x": origin[0]+match.center[0], "y": origin[1]+match.center[1],
@@ -1135,7 +1166,7 @@ def scan_once(templates, threshold):
     windows = desktop.find_pet_windows()
     if not windows:
         return []
-    image, origin = desktop.capture_desktop()
+    image, origin = desktop.capture_desktop(windows)
     result, cache = [], {}
     for window in windows:
         crop = crop_window(image, origin, window)

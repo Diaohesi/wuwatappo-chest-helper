@@ -19,6 +19,7 @@ import time
 from typing import Callable
 
 from PIL import Image, ImageGrab
+import chest_displays as displays
 
 
 @dataclass(frozen=True)
@@ -365,18 +366,44 @@ def virtual_rect() -> tuple[int, int, int, int]:
             top + _user32.GetSystemMetrics(79))
 
 
-def capture_desktop() -> tuple[Image.Image, tuple[int, int]]:
-    """Capture visible pixels on all monitors, including layered pet windows."""
+def capture_desktop(windows=()) -> tuple[Image.Image, tuple[int, int]]:
+    """Read physical pixels and attach the monitor layout that actually supplied them."""
     _require_windows()
     if not is_desktop_available():
-        raise RuntimeError("The interactive desktop is locked or unavailable.")
-    left, top, right, bottom = virtual_rect()
-    image = ImageGrab.grab(all_screens=True, include_layered_windows=True).convert("RGB")
-    if image.size != (right - left, bottom - top):
+        raise CaptureUnavailable("The interactive desktop is locked or unavailable.")
+    try:
+        layout = displays.monitors()
+        full = displays.bounds([m.rect for m in layout])
+        if virtual_rect() != full:
+            raise CaptureUnavailable("显示器布局正在变化。")
+        box = full
+        if windows and len(layout) > 1:
+            parts = [part for w in windows for m in layout if (part := displays.intersection(w.rect, m.rect))]
+            if not parts:
+                raise CaptureUnavailable("桌宠不在任何活动显示器上。")
+            box = displays.bounds(parts)
+        image = None
+        if box != full:
+            try:
+                image = displays.grab_region(box)
+            except OSError:
+                pass  # Try the full desktop backend if the display driver refused this blit.
+        if image is None:
+            image = ImageGrab.grab(all_screens=True, include_layered_windows=True)
+            if image.size != (full[2]-full[0], full[3]-full[1]):
+                raise CaptureUnavailable("Display geometry changed; retry the screen capture.")
+            if box != full:
+                image = image.crop((box[0]-full[0], box[1]-full[1], box[2]-full[0], box[3]-full[1]))
+        if displays.monitors() != layout:
+            raise CaptureUnavailable("显示器布局正在变化。")
+    except OSError as exc:
+        raise CaptureUnavailable(f"桌面采集暂不可用：{exc}") from exc
+    if image.size != (box[2]-box[0], box[3]-box[1]):
         raise CaptureUnavailable("Display geometry changed; retry the screen capture.")
     if all(low == high for low, high in image.getextrema()):
         raise CaptureUnavailable("当前截图只有纯色背景，暂时无法读取桌面画面。")
-    return image, (left, top)
+    image.info['monitor_layout'] = layout
+    return image, box[:2]
 
 
 def point_belongs_to_pet(x: int, y: int) -> bool:

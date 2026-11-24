@@ -29,6 +29,8 @@ class DisplayChangeTests(unittest.TestCase):
         self.stack.enter_context(patch.object(desktop, "_require_windows"))
         self.stack.enter_context(patch.object(desktop, "is_desktop_available", return_value=True))
         self.stack.enter_context(patch.object(desktop, "virtual_rect", side_effect=lambda: self.virtual))
+        self.stack.enter_context(patch.object(desktop.displays, "monitors", side_effect=lambda: (
+            desktop.displays.Monitor('mock', self.virtual, True, 96),)))
         self.stack.enter_context(patch.object(desktop, "find_pet_windows", side_effect=lambda: [self.window]))
         self.stack.enter_context(patch.object(desktop, "input_privilege_problem", return_value=None))
         self.stack.enter_context(patch.object(desktop, "window_is_current", return_value=True))
